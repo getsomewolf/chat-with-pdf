@@ -5,16 +5,20 @@ name = "pypi"
 
 [packages]
 langchain = "*"
-pypdf = "*"
-python-dotenv = "*"
-black = "*"
-openai = "*"
 langchain-community = "*"
-tiktoken = "*"
+langchain-huggingface = "*"
+python-dotenv = "*"
 faiss-cpu = "*"
+sentence-transformers = "*"
+pypdf = "*"
+llama-cpp-python = "*"
+tqdm = "*"
+numpy = "*"
+huggingface-hub = "*"
+colorama = "*"
+cachetools = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.9"
-python_full_version = "3.9.6"
+python_version = "3.10"
