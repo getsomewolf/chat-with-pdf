@@ -17,9 +17,12 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
 from langchain_community.llms import LlamaCpp
 from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
@@ -33,6 +36,10 @@ for directory in [INDICES_DIR, PDFS_DIR, MODELS_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
         print(f"Diretório '{directory}' criado.")
+        
+# Função para formatar documentos
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
         
 #@lru_cache(maxsize=None)        
 # Cache para armazenar índices de vectorstore previamente carregados
@@ -59,6 +66,7 @@ def get_llm_model(model_path, temperature=0.1, max_tokens=512, top_p=0.95, n_ctx
         verbose=False,  # Changed from True to False to reduce console output
         n_batch=64,     # Reduced from 256 to 64 for faster loading
         n_threads=4     # Added to utilize multiple CPU cores efficiently
+        
     )
     
 def process_chunks_in_parallel(documents, text_splitter:RecursiveCharacterTextSplitter, max_workers=None):
@@ -200,7 +208,7 @@ class ChatWithPDF:
         try:
             _ = self.qa.invoke(test_question)
             print("Método 'invoke' detectado para processar perguntas.")
-            self.qa_method = lambda q: self.qa.invoke(q)
+            self.qa_method = lambda q: self.qa.invoke({"input": q})
             return
         except Exception as e:
             print(f"Método 'invoke' falhou: {str(e)[:100]}...")  # Show only first 100 chars of error
@@ -234,7 +242,7 @@ class ChatWithPDF:
         def enhanced_fallback(q):
             try:
                 # First try to get documents directly
-                docs = self.qa.retriever.get_relevant_documents(q)
+                docs = self.retriever.get_relevant_documents(q)
                 if not docs:
                     return {"result": "Não foram encontrados documentos relevantes para essa pergunta."}
                 
@@ -292,8 +300,8 @@ class ChatWithPDF:
             
             # Dividir em chunks com sobreposição para melhor contexto
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1024,
-                chunk_overlap=200,
+                chunk_size=500,
+                chunk_overlap=0,
                 separators=[
                 "\n\n",
                 "\n",
@@ -380,14 +388,25 @@ class ChatWithPDF:
                 
             llm = result
             
-            # Create QA chain with optimized parameters
-            self.qa = RetrievalQA.from_chain_type(
-                llm=llm, 
-                chain_type="stuff",  
-                retriever=self.vector_store.as_retriever(search_kwargs={"k": 2}),  # Reduced from 3 to 2 for speed
-                chain_type_kwargs={"prompt": PROMPT},
-                return_source_documents=False
+            # Criar a cadeia de documentos (equivalente ao chain_type="stuff")
+            combine_docs_chain = create_stuff_documents_chain(llm, PROMPT)
+            
+            # No método setup(), após criar o vector_store, adicione:
+            self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
+
+            # Criação da cadeia LCEL
+            self.qa = (
+                {
+                    "context": self.retriever | format_docs,
+                    "question": RunnablePassthrough(),
+                }
+                | PROMPT
+                | llm
+                | StrOutputParser()
             )
+
+            self.qa_method = lambda q: {"result": self.qa.invoke(q)}
+            
             print("Modelo local carregado e pronto para responder perguntas!")
             
             try:
@@ -406,7 +425,7 @@ class ChatWithPDF:
         
     # E adicionar o método de fallback à classe:
     def _fallback_qa_method(self, question):
-        docs = self.qa.retriever.get_relevant_documents(question)
+        docs = self.qa.get_relevant_documents(question)
         if not docs:
             return {"result": "Não encontrei informações relevantes no documento."}
         
@@ -518,10 +537,10 @@ class ChatWithPDF:
                     error = e
         
         # If we have an error after all retries
-        if error:
+        if error and isinstance(error, TimeoutError):
             # Fallback to direct document retrieval
             try:
-                docs = self.vector_store.similarity_search(question, k=1)
+                docs = self.retriever
                 if docs:
                     response = f"Não foi possível obter uma resposta completa, mas encontrei este trecho relevante:\n\n{docs[0].page_content}"
                 else:
@@ -532,26 +551,26 @@ class ChatWithPDF:
             self.response_cache[question] = response
             return response
         
-        # Extrair o resultado
-        if isinstance(result, dict) and "result" in result:
-            response = result["result"]
+        # Extrair o resultado (formato mudou)
+        if isinstance(result, dict):
+            if "answer" in result:
+                response = result["answer"]
+            elif "result" in result:
+                response = result["result"]
+            else:
+                response = str(result)
         elif isinstance(result, str):
             response = result
         else:
-            try:
-                if hasattr(result, "get"):
-                    response = result.get("result", str(result))
-                else:
-                    response = str(result)
-            except:
-                response = "Resposta obtida, mas em formato não reconhecido."
+            # Fallback para outros formatos
+            response = str(result)
         
         # Adicionar verificação para evitar respostas simples
         if len(response.split()) < 20 and question.lower() not in ["teste", "test"]:
             print("DEBUG: Resposta muito curta, forçando processamento pelo LLM")
             try:
                 # Force LLM processing
-                context = self.qa.retriever.get_relevant_documents(question)[0].page_content
+                context = self.retriever.get_relevant_documents(question)[0].page_content
                 response = llm(f"Contexto do documento PDF: {context}\n\nPergunta: {question}\n\nForneça uma resposta detalhada:")
             except Exception as e:
                 print(f"DEBUG: Erro ao forçar processamento: {e}")
