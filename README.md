@@ -28,7 +28,7 @@ Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de 
 1. Clone este repositório ou baixe os arquivos:
 
    ```bash
-   git clone https://github.com/seu-usuario/chat-with-pdf.git
+   git clone https://github.com/getsomewolf/chat-with-pdf.git
    cd chat-with-pdf
    ```
 
