@@ -206,7 +206,7 @@ class ChatWithPDF:
         
         # Try invoke first as it's most common in newer LangChain versions
         try:
-            _ = self.qa.invoke(test_question)
+            _ = self.qa.invoke({"input": test_question})
             print("Método 'invoke' detectado para processar perguntas.")
             self.qa_method = lambda q: self.qa.invoke({"input": q})
             return
@@ -313,7 +313,7 @@ class ChatWithPDF:
                 "\u3001",  # Ideographic comma
                 "\uff0e",  # Fullwidth full stop
                 "\u3002",  # Ideographic full stop
-                "",
+                ""
                 ]
             )            
             
@@ -386,10 +386,10 @@ class ChatWithPDF:
             if error:
                 raise ValueError(f"Tempo excedido ao carregar modelo: {error}")
                 
-            llm = result
+            self.llm = result
             
             # Criar a cadeia de documentos (equivalente ao chain_type="stuff")
-            combine_docs_chain = create_stuff_documents_chain(llm, PROMPT)
+            combine_docs_chain = create_stuff_documents_chain(self.llm, PROMPT)
             
             # No método setup(), após criar o vector_store, adicione:
             self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
@@ -401,11 +401,11 @@ class ChatWithPDF:
                     "question": RunnablePassthrough(),
                 }
                 | PROMPT
-                | llm
+                | self.llm
                 | StrOutputParser()
             )
 
-            self.qa_method = lambda q: {"result": self.qa.invoke(q)}
+            self.qa_method = lambda q: {"result": self.qa.invoke({"input": q})}
             
             print("Modelo local carregado e pronto para responder perguntas!")
             
@@ -425,83 +425,16 @@ class ChatWithPDF:
         
     # E adicionar o método de fallback à classe:
     def _fallback_qa_method(self, question):
-        docs = self.qa.get_relevant_documents(question)
+        docs = self.retriever.get_relevant_documents(question)
         if not docs:
             return {"result": "Não encontrei informações relevantes no documento."}
         
         context = docs[0].page_content
         # Usar o LLM diretamente
-        response = self.qa.llm(f"Documento: {context}\n\nPergunta: {question}\n\nResposta detalhada:")
-        return {"result": response}
-        
-        # Configurando o LlamaCpp com o modelo local
-        """  with LoadingIndicator("Carregando modelo LLM") as loading:
-                try:
-                    llm = get_llm_model(model_path)
-                    
-                    self.qa = RetrievalQA.from_chain_type(
-                        llm=llm, 
-                        chain_type="stuff", 
-                        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
-                        chain_type_kwargs={"prompt": PROMPT},
-                        return_source_documents=False
-                    )
-                    print("Modelo local carregado e pronto para responder perguntas!")
-                    print("")  # Adicionado: pular linha após o loading
-                    self.determine_qa_method()
-                    
-                except Exception as e:
-                    print(f"Erro ao carregar o modelo LlamaCpp: {e}")
-                    raise ValueError(f"Falha ao inicializar o modelo LLM: {e}")
-        """
-    """ def ask(self, question):
-        if not self.qa:
-            raise ValueError("O sistema ainda não foi inicializado corretamente.")
-        
-        # Verificar cache
-        if question in self.response_cache:
-            return self.response_cache[question]
-        
-        print(f"Processando pergunta: {question}")
-        
-        # Usar timeout para evitar que o modelo fique preso
-        with LoadingIndicator(f"Pensando sobre: '{question}'") as loading:
-            try:
-                result, error = run_with_timeout(
-                    func=lambda: self.qa_method(question),
-                    timeout_duration=120  # Reduzido de 120 para 60 segundos
-                )
-            except Exception as e:
-                print(f"Erro ao processar a pergunta: {e}")
-                return f"Ocorreu um erro ao processar sua pergunta: {str(e)}"
-        
-        if error:
-            return f"Não foi possível obter uma resposta: {str(error)}"
-        
-        # Extrair o resultado
-        if isinstance(result, dict) and "result" in result:
-            response = result["result"]
-        elif isinstance(result, str):
-            response = result
-        else:
-            try:
-                if hasattr(result, "get"):
-                    response = result.get("result", str(result))
-                else:
-                    response = str(result)
-            except:
-                response = "Resposta obtida, mas em formato não reconhecido."
-        
-        # Armazenar no cache
-        self.response_cache[question] = response
-        
-        # Adicione no método ask() antes de retornar a resposta
-        print("DEBUG - Tipo do resultado:", type(result))
-        print("DEBUG - Conteúdo do resultado:", result)
-        print("DEBUG - Resposta final:", response)
-        
-        return response """
-    
+        self.response = self.llm(f"Documento: {context}\n\nPergunta: {question}\n\nResposta detalhada:")
+        return {"result": self.response}
+
+
     def ask_optimized(self, question):
         """Versão otimizada do método ask com timeouts mais curtos e melhor tratamento de erros"""
         if not self.qa:
@@ -571,7 +504,7 @@ class ChatWithPDF:
             try:
                 # Force LLM processing
                 context = self.retriever.get_relevant_documents(question)[0].page_content
-                response = llm(f"Contexto do documento PDF: {context}\n\nPergunta: {question}\n\nForneça uma resposta detalhada:")
+                response = self.llm(f"Contexto do documento PDF: {context}\n\nPergunta: {question}\n\nForneça uma resposta detalhada:")
             except Exception as e:
                 print(f"DEBUG: Erro ao forçar processamento: {e}")
             
