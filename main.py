@@ -36,6 +36,7 @@ for directory in [INDICES_DIR, PDFS_DIR]:
 
 # Função para formatar documentos
 def format_docs(docs):
+    print("\n\n".join(doc.page_content for doc in docs))
     return "\n\n".join(doc.page_content for doc in docs)
 
 # Cache para armazenar índices de vectorstore previamente carregados
@@ -147,15 +148,34 @@ class ChatWithPDF:
             with LoadingIndicator("Lendo PDF") as loading:
                 loader = PyPDFLoader(file_path=self.pdf_path)
                 documents = loader.load()
+                
+                print(f"Total de páginas lidas: {len(documents)}")
+                print(f"Total de tokens lidos: {sum(len(doc.page_content.split()) for doc in documents)}")
+                # quero exibir o conteúdo de cada página
+                for i, doc in enumerate(documents): 
+                    print(f"Página {i+1}: {doc.page_content}")  
+                    
 
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=50,
-                separators=["\n\n", "\n", " ", ".", ",", "\u200b", "\uff0c", "\u3001", "\uff0e", "\u3002", ""]
+                chunk_size=1000,
+                chunk_overlap=150,
+                separators=["\n\n",
+                    "\n",
+                    " ",
+                    ".",
+                    ",",
+                    "\u200b",  # Zero-width space
+                    "\uff0c",  # Fullwidth comma
+                    "\u3001",  # Ideographic comma
+                    "\uff0e",  # Fullwidth full stop
+                    "\u3002",  # Ideographic full stop
+                    ""
+                    ]
             )
 
             with LoadingIndicator("Dividindo documento em chunks") as loading:
-                docs = text_splitter.split_documents(documents)
+                docs = text_splitter.split_documents(documents)  
+                print(f"Total de chunks: {len(docs)}")
 
             print(f"Criando embeddings e índice de pesquisa...")
             with LoadingIndicator("Criando vetores") as loading:
@@ -166,7 +186,7 @@ class ChatWithPDF:
             print(f"Índice criado e salvo em {self.index_path}")
 
         # Configurar o retriever
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
+        self.retriever = self.vector_store.as_retriever(kwargs={"k": 4})
 
     def ask_optimized(self, question):
         if question in self.response_cache:
@@ -184,7 +204,11 @@ class ChatWithPDF:
                     if not docs:
                         return "Não foram encontrados documentos relevantes para essa pergunta."
 
-                    context = format_docs(docs)
+                    context = format_docs(docs)                   
+                    
+                    print(f"Contexto recuperado: {context}...")  # Exibir apenas os primeiros 100 caracteres do contexto
+                    # Verificar se o contexto é muito longo            
+                    
 
                     # Usar Ollama para gerar a resposta
                     response = ollama.chat(model="llama3.2", messages=[
