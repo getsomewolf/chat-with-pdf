@@ -211,7 +211,7 @@ class ChatWithPDF:
                     
 
                     # Usar Ollama para gerar a resposta
-                    response = ollama.chat(model="llama3.2", messages=[
+                    response = ollama.chat(model="deepseek-r1", messages=[
                         {
                             'role': 'user',
                             'content': f"Contexto: {context}\n\nPergunta: {question}\n\nResposta detalhada:"
