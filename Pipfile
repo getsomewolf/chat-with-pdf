@@ -17,6 +17,7 @@ numpy = "*"
 huggingface-hub = "*"
 colorama = "*"
 cachetools = "*"
+ollama = "*"
 
 [dev-packages]
 
