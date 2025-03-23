@@ -186,7 +186,7 @@ Contribuições são bem-vindas! Abra um issue ou envie um pull request para col
 
 ## Licença
 
-Este projeto está licenciado sob a licença MIT - veja o arquivo LICENSE para mais detalhes.
+Este projeto está licenciado sob a licença Apache-2.0 - veja o arquivo LICENSE para mais detalhes.
 
 ## Agradecimentos
 
