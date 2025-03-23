@@ -2,7 +2,7 @@
 
 Uma aplicação de linha de comando que permite conversar com seus documentos PDF utilizando um modelo de linguagem local.
 
-> **ATENÇÃO:** Este projeto está em desenvolvimento e pode conter "bugs", fique à vontade para testar!
+> **ATENÇÃO:** Este projeto está em desenvolvimento e pode conter "bugs". Fique à vontade para testar!
 
 ## Descrição
 
