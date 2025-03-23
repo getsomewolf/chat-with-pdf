@@ -2,11 +2,11 @@
 
 Uma aplicação de linha de comando que permite conversar com seus documentos PDF utilizando um modelo de linguagem local.
 
-> **ATENÇÃO:** Este projeto está em desenvolvimento e atualmente está "quebrado" até a próxima versão. Sinta-se à vontade para debuggar e contribuir para a melhoria do projeto.
+> **ATENÇÃO:** Este projeto está em desenvolvimento e pode conter "bugs", fique à vontade para testar!
 
 ## Descrição
 
-Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de documentos PDF e receber respostas detalhadas, sem depender de serviços externos como OpenAI ou outros provedores de API. A aplicação utiliza um modelo de linguagem local (LLM) para processar as consultas e gerar respostas contextualizadas baseadas no conteúdo do documento.
+Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de documentos PDF e receber respostas detalhadas, sem depender de serviços externos como OpenAI ou outros provedores de API. A aplicação utiliza um modelo de linguagem local (LLM) através do `ollama` para processar as consultas e gerar respostas contextualizadas baseadas no conteúdo do documento.
 
 ## Características
 
@@ -25,7 +25,9 @@ Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de 
 
 ## Instalação
 
-1. Clone este repositório ou baixe os arquivos:
+Siga os passos abaixo para configurar o ambiente e instalar as dependências necessárias:
+
+1. **Clone este repositório ou baixe os arquivos:**
 
    ```bash
    git clone https://github.com/getsomewolf/chat-with-pdf.git
@@ -44,79 +46,143 @@ Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de 
    pipenv install
    ```
 
-   Isso criará um ambiente virtual e instalará todas as dependências definidas no Pipfile.
+   Isso criará um ambiente virtual e instalará todas as dependências listadas no Pipfile, incluindo o `ollama`.
 
-4. Baixe um modelo de linguagem GGML/GGUF. Recomendamos:
-   - [Llama-2-7B-Chat-GGUF](https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF)
-   - [Mistral-7B-Instruct-v0.2-GGUF](https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF)
+4. **Instale o Ollama**:
 
-5. Coloque o arquivo do modelo na pasta `models` do projeto (será criada automaticamente na primeira execução).
-   - Você pode renomear o modelo para `ggml-model.bin` ou deixar o nome original.
+   - Visite o [site oficial do Ollama](https://ollama.com/) e siga as instruções para instalar o Ollama no seu sistema operacional.
+   - Após a instalação, baixe um modelo de linguagem. Recomendamos o modelo `llama3.2`, mas você pode escolher outro modelo compatível:
+
+     ```bash
+     ollama pull llama3.2
+     ```
+
+5. **Certifique-se de que o Ollama está rodando**:
+
+   - Inicie o servidor do Ollama em um terminal separado:
+
+     ```bash
+     ollama serve
+     ```
+
+   - Mantenha este terminal aberto enquanto usa o Chat com PDF.
 
 ## Uso
 
-1. Ative o ambiente virtual do Pipenv:
+1. **Ative o ambiente virtual do Pipenv:**
 
    ```bash
    pipenv shell
    ```
 
-2. Execute o aplicativo:
+2. **Execute o aplicativo:**
 
    ```bash
    python main.py
    ```
 
-3. Selecione um PDF para processar:
-   - O programa mostrará uma lista de PDFs disponíveis.
-   - PDFs que já foram processados anteriormente serão marcados como [indexado].
-   - Você pode digitar o número correspondente ao PDF ou o caminho completo para um novo arquivo.
+3. **Selecione um PDF para processar:**
+   - O programa exibirá uma lista de PDFs disponíveis no diretório `pdfs/`.
+   - PDFs já processados anteriormente serão marcados como `[indexado]`.
+   - Digite o número correspondente ao PDF ou o caminho completo para um novo arquivo.
 
-4. Faça perguntas sobre o documento:
+4. **Faça perguntas sobre o documento:**
    - Digite sua pergunta e pressione Enter.
-   - O programa processará a pergunta e mostrará a resposta.
+   - O programa processará a pergunta usando o modelo configurado no `ollama` e exibirá a resposta.
    - Digite `ajuda` ou `help` para ver sugestões de perguntas.
    - Digite `sair`, `exit` ou `quit` para encerrar o programa.
+
+## Tutorial para Rodar Localmente
+
+Aqui está um guia passo a passo para rodar o projeto localmente após clonar o repositório:
+
+1. **Clone o repositório:**
+
+   ```bash
+   git clone https://github.com/getsomewolf/chat-with-pdf.git
+   cd chat-with-pdf
+   ```
+
+2. **Instale o Pipenv (se necessário):**
+
+   ```bash
+   pip install pipenv
+   ```
+
+3. **Instale as dependências:**
+
+   ```bash
+   pipenv install
+   ```
+
+4. **Configure o Ollama:**
+
+   - Instale o Ollama seguindo as instruções no [site oficial](https://ollama.com/).
+   - Baixe o modelo `llama3.2` (ou outro de sua preferência):
+
+     ```bash
+     ollama pull llama3.2
+     ```
+
+   - Inicie o servidor do Ollama em um terminal separado:
+
+     ```bash
+     ollama serve
+     ```
+
+5. **Execute o projeto:**
+
+   - Ative o ambiente virtual:
+
+     ```bash
+     pipenv shell
+     ```
+
+   - Inicie a aplicação:
+
+     ```bash
+     python main.py
+     ```
+
+   - Siga as instruções na tela para selecionar um PDF e começar a fazer perguntas.
 
 ## Estrutura do Projeto
 
 - `main.py` - Arquivo principal da aplicação.
-- `models/` - Diretório onde os modelos de linguagem devem ser colocados.
 - `pdfs/` - Diretório onde os PDFs serão armazenados.
 - `indices/` - Diretório para os índices de vetores dos documentos processados.
-- `Pipfile` - Arquivo que define as dependências do projeto.
+- `Pipfile` - Arquivo que define as dependências do projeto, agora incluindo `ollama`.
 - `Pipfile.lock` - Arquivo gerado automaticamente para bloquear as versões das dependências.
 
 ## Configuração Avançada
 
-Você pode ajustar os seguintes parâmetros no código fonte para personalizar o comportamento:
+Você pode personalizar o comportamento ajustando os seguintes parâmetros no código fonte (`main.py`):
 
-- **Tamanho dos chunks**: Modificando o parâmetro `chunk_size` (padrão: 400 caracteres).
-- **Sobreposição dos chunks**: Ajustando o parâmetro `chunk_overlap` (padrão: 100 caracteres).
-- **Número de documentos recuperados**: Alterando o parâmetro `k` na pesquisa (padrão: 4).
-- **Timeout**: Modificando o valor em `timeout_duration` (padrão: 120 segundos).
-- **Parâmetros do modelo LLM**: Ajustando valores como `temperature`, `max_tokens`, `n_ctx`, etc.
+- **Tamanho dos chunks**: Modifique `chunk_size` (padrão: 500 caracteres).
+- **Sobreposição dos chunks**: Ajuste `chunk_overlap` (padrão: 50 caracteres).
+- **Número de documentos recuperados**: Altere o parâmetro `k` no retriever (padrão: 2).
+- **Timeout**: Modifique `timeout_duration` (padrão: 120 segundos).
+- **Parâmetros do Ollama**: Ajuste `temperature`, `max_tokens`, etc., na chamada ao `ollama.chat()`.
 
 ## Resolução de Problemas
 
-1. **Erro "Nenhum modelo LLM encontrado"**:
-   - Certifique-se de ter baixado um modelo GGML/GGUF.
-   - Verifique se o modelo está na pasta `models/`.
+1. **Erro "Ollama não está respondendo":**
+   - Verifique se o servidor do Ollama está ativo (`ollama serve`).
+   - Confirme que o modelo foi baixado corretamente com `ollama list`.
 
-2. **Respostas muito lentas**:
-   - Considere usar um modelo menor ou quantizado (como modelos com Q4_K_M no nome).
-   - Aumente o parâmetro `n_batch` para acelerar a inferência em GPUs.
+2. **Respostas muito lentas:**
+   - Use um modelo menor ou mais rápido (ex.: `llama3.2` já é otimizado).
+   - Aumente os recursos de hardware, se possível.
 
-3. **Erros de memória**:
-   - Reduza o valor de `n_ctx` para diminuir o consumo de memória.
-   - Use um modelo menor ou mais quantizado.
+3. **Erros de memória:**
+   - Reduza o número de documentos recuperados (`k`) ou use um modelo menor.
 
-4. **Índice corrompido**:
-   - Delete a pasta do índice correspondente em `indices/` para recriá-lo.
+4. **Índice corrompido:**
+   - Delete o diretório correspondente em `indices/` para recriá-lo.
 
 ## Contribuições
 
-Contribuições são bem-vindas! Sinta-se à vontade para abrir um issue ou enviar um pull request.
+Contribuições são bem-vindas! Abra um issue ou envie um pull request para colaborar.
 
 ## Licença
 
@@ -125,6 +191,10 @@ Este projeto está licenciado sob a licença MIT - veja o arquivo LICENSE para m
 ## Agradecimentos
 
 - [LangChain](https://github.com/hwchase17/langchain) - Framework para aplicações de LLM.
-- [Llama.cpp](https://github.com/ggerganov/llama.cpp) - Implementação eficiente de modelos de linguagem.
+- [Ollama](https://ollama.com/) - Ferramenta para rodar modelos de linguagem localmente.
 - [FAISS](https://github.com/facebookresearch/faiss) - Biblioteca para busca de similaridade eficiente.
-- [TheBloke](https://huggingface.co/TheBloke) - Disponibiliza modelos GGML/GGUF otimizados.
+- [Hugging Face](https://huggingface.co/) - Plataforma para modelos de linguagem e embeddings.
+
+---
+
+Você pode salvar este conteúdo em um arquivo chamado `README.md` ou qualquer outro nome de sua preferência! Se precisar de ajustes, é só avisar.

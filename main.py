@@ -19,7 +19,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
-from functools import lru_cache
+from functools import lru_cache # não usado, mas pode ser útil para otimização futura
 
 
 
