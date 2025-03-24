@@ -16,7 +16,7 @@ warnings.filterwarnings("ignore")
 
 load_dotenv()
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
 from functools import lru_cache # não usado, mas pode ser útil para otimização futura
@@ -136,7 +136,7 @@ class ChatWithPDF:
         print(f"Preparando para processar: {self.pdf_path}")
 
         with LoadingIndicator("Carregando embeddings") as loading:
-            embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", show_progress=True)
 
         if self.index_exists():
             print(f"Índice encontrado para {self.pdf_path}. Carregando índice existente...")
@@ -156,21 +156,8 @@ class ChatWithPDF:
                     print(f"Página {i+1}: {doc.page_content}")  
                     
 
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=150,
-                separators=["\n\n",
-                    "\n",
-                    " ",
-                    ".",
-                    ",",
-                    "\u200b",  # Zero-width space
-                    "\uff0c",  # Fullwidth comma
-                    "\u3001",  # Ideographic comma
-                    "\uff0e",  # Fullwidth full stop
-                    "\u3002",  # Ideographic full stop
-                    ""
-                    ]
+            text_splitter = CharacterTextSplitter(
+                chunk_size=1000, chunk_overlap=30, separator="\n"
             )
 
             with LoadingIndicator("Dividindo documento em chunks") as loading:
@@ -186,7 +173,8 @@ class ChatWithPDF:
             print(f"Índice criado e salvo em {self.index_path}")
 
         # Configurar o retriever
-        self.retriever = self.vector_store.as_retriever(kwargs={"k": 4})
+        self.retriever = self.vector_store.as_retriever(search_type="mmr",
+                search_kwargs={'k': 6, 'lambda_mult': 0.25})
 
     def ask_optimized(self, question):
         if question in self.response_cache:
@@ -206,21 +194,30 @@ class ChatWithPDF:
 
                     context = format_docs(docs)                   
                     
-                    print(f"Contexto recuperado: {context}...")  # Exibir apenas os primeiros 100 caracteres do contexto
+                    #print(f"Contexto recuperado: {context}...")  # Exibir apenas os primeiros 100 caracteres do contexto
                     # Verificar se o contexto é muito longo            
                     
 
                     # Usar Ollama para gerar a resposta
-                    response = ollama.chat(model="llama3.2", messages=[
-                        {
-                            'role': 'user',
-                            'content': f"Contexto: {context}\n\nPergunta: {question}\n\nResposta detalhada:"
-                        },
-                    ])
+                    stream = ollama.chat(model="llama3.2", messages=[
+                            {   
+                                'role': 'user',
+                                'content': f'Você é um assistente de QA especializado em responder perguntas com base em documentos. Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido. Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída. Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.\n\nContexto: {context}\n\nPergunta: {question}\n\nResposta:'
+                            },
+                        ],
+                        stream=True # Habilitar streaming
+                    )
                     
 
-                    # Extrair a resposta
-                    answer = response['message']['content']
+                    # Processar os chunks da resposta
+                    answer = ""          
+                    print("\nResposta: ", end='', flush=True)  # Iniciar a exibição da resposta          
+                    for chunk in stream:
+                        content = chunk['message']['content']                        
+                        print(content, end='', flush=True)  # Exibir cada chunk em tempo real
+                        answer += content  # Concatenar para formar a resposta completa
+                        
+                    print("\n")  # Adicionar uma nova linha após a resposta completa
                     self.response_cache[question] = answer
                     return answer
 
