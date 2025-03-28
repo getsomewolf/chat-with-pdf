@@ -154,11 +154,11 @@ class ChatWithPDF:
         self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
         
         # Configurações de recuperação melhoradas
-        self.retrieval_k = 3         # Aumentado para capturar mais contexto potencialmente relevante
+        self.retrieval_k = 10         # Aumentado para capturar mais contexto potencialmente relevante
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
-        self.force_reindex = True
+        self.force_reindex = False
         
         # Inicialização
         self.setup()
@@ -402,7 +402,7 @@ Resposta:'''
                 # Processar os chunks da resposta
                 answer = ""          
                 # Linha completamente limpa antes de iniciar a resposta
-                print("\nResposta:", end='', flush=True)
+                print("\nGerando resposta:", end='', flush=True)
                 
                 for chunk in stream:
                     content = chunk['message']['content']
@@ -618,11 +618,7 @@ if __name__ == "__main__":
                 print_help()
                 continue
 
-            #start_time = time.time()
             chat.ask_optimized(user_question)
-            #elapsed_time = time.time() - start_time
-
-            #print(f"\nResposta ({elapsed_time:.1f}s):", answer)
     except Exception as e:
         print(f"\nErro: {e}")
         print("Tente novamente com um arquivo PDF válido.")
