@@ -9,6 +9,7 @@ from datetime import datetime
 import shutil
 import cachetools
 import ollama
+import re
 
 
 # Ignorar avisos para limpar a saída
@@ -16,7 +17,7 @@ warnings.filterwarnings("ignore")
 
 load_dotenv()
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
 from functools import lru_cache # não usado, mas pode ser útil para otimização futura
@@ -36,8 +37,28 @@ for directory in [INDICES_DIR, PDFS_DIR]:
 
 # Função para formatar documentos
 def format_docs(docs):
-    print("\n\n".join(doc.page_content for doc in docs))
-    return "\n\n".join(doc.page_content for doc in docs)
+    formatted_text = ""
+    print(f"Formatando {len(docs)} documentos recuperados:")
+    
+    for i, doc in enumerate(docs):
+        # Adicionar metadados como fonte se disponíveis
+        source_info = ""
+        if doc.metadata and 'source' in doc.metadata:
+            source_path = doc.metadata['source']
+            page_info = f", Página {doc.metadata.get('page', 'N/A')}" if 'page' in doc.metadata else ""
+            source_info = f"[Fonte: {os.path.basename(source_path)}{page_info}]"
+        
+        # Adicionar índice do chunk e metadados ao log
+        chunk_preview = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+        print(f"Chunk {i+1}/{len(docs)} {source_info}:\n{chunk_preview}\n")
+        
+        # Adicionar separador claro entre chunks para o texto formatado
+        formatted_text += f"{doc.page_content}\n"
+        if source_info:
+            formatted_text += f"{source_info}\n"
+        formatted_text += "\n" + "-" * 40 + "\n"
+    
+    return formatted_text
 
 # Cache para armazenar índices de vectorstore previamente carregados
 _vector_store_cache = {}
@@ -69,9 +90,9 @@ class LoadingIndicator:
         self.is_running = False
         if self.animation_thread:
             self.animation_thread.join()
-        sys.stdout.write('\r' + ' ' * (len(self.message) + 10) + '\r')
+        # Clear the entire line to ensure no loading animation characters remain
+        sys.stdout.write('\r' + ' ' * (len(self.message) + 50) + '\r')
         sys.stdout.flush()
-        print("")  # Nova linha para limpar a saída
 
     def _animate(self):
         animation = "|/-\\"
@@ -127,6 +148,19 @@ class ChatWithPDF:
         self.pdf_basename = os.path.basename(self.pdf_path).split('.')[0]
         self.index_path = os.path.join(INDICES_DIR, f"index_{self.pdf_basename}")
         self.response_cache = cachetools.TTLCache(maxsize=100, ttl=3600)
+        
+        # Configurações de chunking melhoradas
+        self.chunk_size = 1000       # Tamanho equilibrado para capturar contexto significativo
+        self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
+        
+        # Configurações de recuperação melhoradas
+        self.retrieval_k = 10         # Aumentado para capturar mais contexto potencialmente relevante
+        self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
+        
+        # Configuração para override manual quando necessário
+        self.force_reindex = False
+        
+        # Inicialização
         self.setup()
 
     def index_exists(self):
@@ -136,95 +170,266 @@ class ChatWithPDF:
         print(f"Preparando para processar: {self.pdf_path}")
 
         with LoadingIndicator("Carregando embeddings") as loading:
-            embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", show_progress=True)
+            # Modelo de embeddings mais robusto para melhor captura semântica
+            # Usando um modelo melhor para captura semântica mais precisa
+            embeddings = HFEmbeddings(
+                model_name="sentence-transformers/all-mpnet-base-v2", 
+                show_progress=True
+            )
+            print(f"Modelo de embeddings carregado: sentence-transformers/all-mpnet-base-v2")
 
-        if self.index_exists():
+        if self.index_exists() and not self.force_reindex:
             print(f"Índice encontrado para {self.pdf_path}. Carregando índice existente...")
             with LoadingIndicator("Carregando índice") as loading:
                 self.vector_store = get_vector_store(self.index_path, embeddings)
-            print("Índice carregado com sucesso!")
+            print(f"Índice carregado com sucesso: {self.index_path}")
+            
+            # Verificar a integridade do índice
+            try:
+                test_query = "teste"
+                docs = self.vector_store.similarity_search(test_query, k=1)
+                print(f"Índice verificado e funcional - encontrado {len(docs)} documento(s) de teste")
+            except Exception as e:
+                print(f"AVISO: Teste de índice falhou: {e}")
+                print("Recriando índice para garantir integridade...")
+                self._create_index(embeddings)
         else:
-            print(f"Processando o PDF e criando novo índice...")
-            with LoadingIndicator("Lendo PDF") as loading:
-                loader = PyPDFLoader(file_path=self.pdf_path)
-                documents = loader.load()
-                
-                print(f"Total de páginas lidas: {len(documents)}")
-                print(f"Total de tokens lidos: {sum(len(doc.page_content.split()) for doc in documents)}")
-                # quero exibir o conteúdo de cada página
-                for i, doc in enumerate(documents): 
-                    print(f"Página {i+1}: {doc.page_content}")  
-                    
+            if self.force_reindex and self.index_exists():
+                print(f"Forçando recriação do índice conforme solicitado.")
+            else:
+                print(f"Nenhum índice encontrado. Processando o PDF e criando novo índice...")
+            self._create_index(embeddings)
 
-            text_splitter = CharacterTextSplitter(
-                chunk_size=1000, chunk_overlap=30, separator="\n"
-            )
+        # Configurar o retriever com parâmetros aprimorados
+        print(f"Configurando retriever aprimorado com k={self.retrieval_k} e lambda_mult={self.diversity_lambda}...")
+        self.retriever = self.vector_store.as_retriever(
+            search_type="mmr",  # Usar Maximum Marginal Relevance para melhor diversidade
+            search_kwargs={
+                'k': self.retrieval_k,
+                'lambda_mult': self.diversity_lambda,
+                'fetch_k': self.retrieval_k * 2  # Buscar mais candidatos para selecionar os mais diversos
+            }
+        )
+        print("Retriever configurado com sucesso!")
 
-            with LoadingIndicator("Dividindo documento em chunks") as loading:
-                docs = text_splitter.split_documents(documents)  
-                print(f"Total de chunks: {len(docs)}")
+    def _create_index(self, embeddings):
+        """Método interno para criar o índice de um PDF"""
+        print(f"Iniciando processamento do PDF: {self.pdf_path}")
+        
+        with LoadingIndicator("Lendo PDF") as loading:
+            loader = PyPDFLoader(file_path=self.pdf_path)
+            documents = loader.load()
+            
+        print(f"\n{'=' * 50}")
+        print(f"ESTATÍSTICAS DO DOCUMENTO:")
+        print(f"{'=' * 50}")
+        print(f"Total de páginas lidas: {len(documents)}")
+        total_tokens = sum(len(doc.page_content.split()) for doc in documents)
+        total_chars = sum(len(doc.page_content) for doc in documents)
+        print(f"Total de tokens: {total_tokens}")
+        print(f"Total de caracteres: {total_chars}")
+        print(f"{'=' * 50}")
+        
+        # Exibir amostra de cada página para debug
+        print("\nANÁLISE DE CONTEÚDO DO DOCUMENTO:")
+        for i, doc in enumerate(documents):
+            content_preview = doc.page_content[:150]
+            print(f"\nPágina {i+1} ({len(doc.page_content)} caracteres):")
+            print(f"{content_preview}...")
+            if i >= 2 and len(documents) > 5:  # Limitar a exibição para documentos grandes
+                print(f"... e mais {len(documents) - 3} páginas")
+                break
 
-            print(f"Criando embeddings e índice de pesquisa...")
-            with LoadingIndicator("Criando vetores") as loading:
-                self.vector_store = FAISS.from_documents(docs, embeddings)
-                if not os.path.exists(self.index_path):
-                    os.makedirs(self.index_path)
-                self.vector_store.save_local(self.index_path)
-            print(f"Índice criado e salvo em {self.index_path}")
+        # Criar um text splitter com configurações aprimoradas
+        print(f"\nConfigurando text splitter avançado: chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            separators=["\n\n", "\n", ". ", " ", ""],  # Mais granularidade na separação
+            keep_separator=True
+        )
 
-        # Configurar o retriever
-        self.retriever = self.vector_store.as_retriever(search_type="mmr",
-                search_kwargs={'k': 6, 'lambda_mult': 0.25})
+        with LoadingIndicator("Dividindo documento em chunks") as loading:
+            docs = text_splitter.split_documents(documents)
+        
+        print(f"\nDocumento dividido em {len(docs)} chunks")
+        print(f"Tamanho médio dos chunks: {sum(len(doc.page_content) for doc in docs) / len(docs):.1f} caracteres")
+        
+        # Mostrar amostra dos chunks para debug
+        if len(docs) > 0:
+            print("\nAMOSTRA DE CHUNKS:")
+            for i, doc in enumerate(docs[:3]):  # Mostrar apenas os 3 primeiros chunks
+                print(f"\nChunk {i+1}/{len(docs)} - {len(doc.page_content)} caracteres:")
+                print(f"{doc.page_content[:150]}...")
+            if len(docs) > 3:
+                print(f"... e mais {len(docs) - 3} chunks")
+
+        print(f"\nCriando embeddings e índice FAISS...")
+        with LoadingIndicator("Criando vetores e índice") as loading:
+            self.vector_store = FAISS.from_documents(docs, embeddings)
+            if not os.path.exists(self.index_path):
+                os.makedirs(self.index_path)
+            self.vector_store.save_local(self.index_path)
+        print(f"Índice FAISS criado e salvo em {self.index_path}")
+        #print(f"Dimensão dos vetores: {self.vector_store.index.d}")
+        #print(f"Número de vetores no índice: {self.vector_store.index.ntotal}")
+
+    def decompose_complex_query(self, query):
+        """Decompõe uma consulta complexa em consultas mais simples para melhorar a recuperação"""
+        # Detectar se a consulta contém várias perguntas ou tópicos
+        if '?' in query and query.count('?') > 1:
+            print("Detectada consulta multi-parte. Decompondo para melhorar recuperação...")
+            # Dividir por ponto de interrogação para perguntas separadas
+            sub_queries = [q.strip() + '?' for q in query.split('?') if q.strip()]
+            return sub_queries
+        
+        # Detectar partes separadas por "and", "or", "e", "ou"
+        potential_conjunctions = [' and ', ' or ', ' e ', ' ou ', ', ']
+        for conjunction in potential_conjunctions:
+            if conjunction in query.lower():
+                print(f"Detectada consulta com múltiplos tópicos conectados por '{conjunction}'")
+                sub_queries = [q.strip() for q in re.split(conjunction, query, flags=re.IGNORECASE) if q.strip()]
+                return sub_queries
+        
+        # Se não há divisão clara, retornar a consulta original
+        return [query]
+
+    def get_enhanced_context(self, query):
+        """Obtém um contexto aprimorado para consultas complexas"""
+        sub_queries = self.decompose_complex_query(query)
+        
+        if len(sub_queries) > 1:
+            print(f"Consulta dividida em {len(sub_queries)} partes para busca individualizada:")
+            for i, sub_q in enumerate(sub_queries):
+                print(f"  {i+1}. '{sub_q}'")
+            
+            all_docs = []
+            # Para cada subconsulta, recuperar documentos relevantes
+            for sub_q in sub_queries:
+                print(f"\nBuscando por: '{sub_q}'")
+                sub_docs = self.retriever.get_relevant_documents(sub_q)
+                print(f"  Encontrados {len(sub_docs)} documentos relevantes")
+                all_docs.extend(sub_docs)
+            
+            # Remover duplicatas mantendo a ordem
+            unique_docs = []
+            seen_content = set()
+            for doc in all_docs:
+                content_hash = hash(doc.page_content)
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    unique_docs.append(doc)
+            
+            print(f"Total de {len(unique_docs)} documentos únicos recuperados após remoção de duplicatas")
+            return unique_docs
+        else:
+            # Para consultas simples, usar o método padrão
+            print("Usando método de recuperação padrão para consulta simples")
+            return self.retriever.get_relevant_documents(query)
 
     def ask_optimized(self, question):
+        """Método otimizado para consultar o documento com base em uma pergunta"""
         if question in self.response_cache:
             print("Resposta encontrada no cache!")
             return self.response_cache[question]
 
-        print(f"Processando pergunta: {question}")
+        print(f"\nProcessando pergunta: '{question}'")
         max_retries = 2
 
         for attempt in range(max_retries):
-            with LoadingIndicator(f"Pensando sobre sua pergunta (tentativa {attempt+1}/{max_retries})") as loading:
-                try:
-                    # Recuperar documentos relevantes
-                    docs = self.retriever.get_relevant_documents(question)
-                    if not docs:
-                        return "Não foram encontrados documentos relevantes para essa pergunta."
+            # Cria a mensagem do indicador de carregamento
+            loading_message = f"Pensando sobre sua pergunta (tentativa {attempt+1}/{max_retries})"
+            loading = LoadingIndicator(loading_message)
+            loading.start()
+            
+            try:
+                # Monitorar tempo de recuperação
+                retrieval_start = time.time()
+                
+                # Usar estratégia de recuperação aprimorada para consultas complexas
+                docs = self.get_enhanced_context(question)
+                # Paramos o indicador de loading antes de continuar com o output
+                loading.stop()
+                
+                retrieval_time = time.time() - retrieval_start
+                print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(docs)} documentos encontrados")
+                
+                if not docs:
+                    print("ALERTA: Nenhum documento relevante encontrado")
+                    return "Não foram encontrados documentos relevantes para essa pergunta."
 
-                    context = format_docs(docs)                   
-                    
-                    #print(f"Contexto recuperado: {context}...")  # Exibir apenas os primeiros 100 caracteres do contexto
-                    # Verificar se o contexto é muito longo            
-                    
+                # Formatar os documentos recuperados e criar contexto
+                context = format_docs(docs)
+                context_size = len(context)
+                print(f"Contexto gerado: {context_size} caracteres")
+                
+                if context_size > 15000:
+                    print(f"AVISO: Contexto muito grande ({context_size} caracteres).")
+                
+                # Monitorar tempo de geração da resposta
+                generation_start = time.time()
+                
+                # Usar Ollama para gerar a resposta
+                print("Enviando consulta para o modelo Ollama...")
+                stream = ollama.chat(
+                    model="llama3.2", 
+                    messages=[
+                        {   
+                            'role': 'user',
+                            'content': f'''Você é um assistente de QA especializado em responder perguntas com base em documentos. 
+Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido.
+Considere todas as partes da pergunta e certifique-se de responder a cada aspecto.
+Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída.
+Se apenas uma parte da resposta estiver disponível no contexto, forneça o que for possível encontrar e indique o que está faltando.
+Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.
 
-                    # Usar Ollama para gerar a resposta
-                    stream = ollama.chat(model="llama3.2", messages=[
-                            {   
-                                'role': 'user',
-                                'content': f'Você é um assistente de QA especializado em responder perguntas com base em documentos. Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido. Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída. Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.\n\nContexto: {context}\n\nPergunta: {question}\n\nResposta:'
-                            },
-                        ],
-                        stream=True # Habilitar streaming
-                    )
-                    
+Contexto: {context}
 
-                    # Processar os chunks da resposta
-                    answer = ""          
-                    print("\nResposta: ", end='', flush=True)  # Iniciar a exibição da resposta          
-                    for chunk in stream:
-                        content = chunk['message']['content']                        
-                        print(content, end='', flush=True)  # Exibir cada chunk em tempo real
-                        answer += content  # Concatenar para formar a resposta completa
-                        
-                    print("\n")  # Adicionar uma nova linha após a resposta completa
-                    self.response_cache[question] = answer
-                    return answer
+Pergunta: {question}
 
-                except Exception as e:
-                    print(f"Tentativa {attempt+1} falhou com erro: {e}")
-                    if attempt == max_retries - 1:
-                        return f"Erro ao processar a pergunta: {e}"
+Resposta:'''
+                        },
+                    ],
+                    stream=True, 
+                    options={
+                        "temperature": 0.1,  # Baixa temperatura para respostas mais determinísticas
+                        "num_predict": 2048,  # Limite de tokens para prever
+                        "top_k": 40,         # Número de tokens mais prováveis a considerar
+                        "top_p": 0.9         # Probabilidade cumulativa para amostragem de núcleo
+                    }
+                )
+                
+                # Processar os chunks da resposta
+                answer = ""          
+                # Linha completamente limpa antes de iniciar a resposta
+                print("\nGerando resposta:", end='', flush=True)
+                
+                for chunk in stream:
+                    content = chunk['message']['content']
+                    answer += content  # Concatenar para formar a resposta completa
+                    print(content, end='', flush=True)  # Imprimir cada chunk em tempo real
+                
+                # Finalizar com informações sobre o tempo
+                generation_time = time.time() - generation_start
+                print(f"\n\nResposta gerada em {generation_time:.2f}s")
+                
+                # Salvar no cache para consultas futuras
+                self.response_cache[question] = answer
+                return answer
+
+            except Exception as e:
+                # Certifica-se de parar o indicador de loading antes de mostrar o erro
+                loading.stop()
+                print(f"ERRO: Tentativa {attempt+1} falhou com erro: {str(e)}")
+                import traceback
+                print(f"Detalhes do erro: {traceback.format_exc()}")
+                
+                if attempt == max_retries - 1:
+                    return f"Erro ao processar a pergunta: {str(e)}"
+            finally:
+                # Garantir que o indicador de loading seja interrompido em qualquer circunstância
+                if loading.is_running:
+                    loading.stop()
 
 def list_available_pdfs():
     pdfs_in_dir = [os.path.join(PDFS_DIR, f) for f in os.listdir(PDFS_DIR) if f.lower().endswith('.pdf')]
@@ -287,25 +492,98 @@ def print_help():
     print("- Extraia todas as informações técnicas sobre [assunto].")
 
 def cleanup_unused_indices():
+    """Remover índices de PDFs não encontrados e verificar integridade dos índices"""
     if not os.path.exists(INDICES_DIR):
         return
 
-    for index_dir in os.listdir(INDICES_DIR):
-        if index_dir.startswith("index_"):
-            pdf_name = index_dir.replace("index_", "") + ".pdf"
-            pdf_path = os.path.join(PDFS_DIR, pdf_name)
+    print("\nVerificando integridade e limpando índices não utilizados...")
+    
+    # Listar todos os índices existentes
+    indices = [d for d in os.listdir(INDICES_DIR) if os.path.isdir(os.path.join(INDICES_DIR, d)) and d.startswith("index_")]
+    print(f"Encontrados {len(indices)} índices no diretório {INDICES_DIR}")
+    
+    # Verificar cada índice
+    for index_dir in indices:
+        pdf_name = index_dir.replace("index_", "") + ".pdf"
+        pdf_path = os.path.join(PDFS_DIR, pdf_name)
+        index_path = os.path.join(INDICES_DIR, index_dir)
+        
+        # Verificar se o PDF correspondente existe
+        if not os.path.exists(pdf_path):
+            print(f"LIMPEZA: Removendo índice para PDF não encontrado: {pdf_name}")
+            try:
+                shutil.rmtree(index_path)
+            except Exception as e:
+                print(f"Erro ao remover índice: {e}")
+            continue
+        
+        # Verificar integridade do índice
+        try:
+            # Verificar se os arquivos necessários existem
+            index_faiss = os.path.join(index_path, "index.faiss")
+            index_pkl = os.path.join(index_path, "index.pkl")
+            
+            if not (os.path.exists(index_faiss) and os.path.exists(index_pkl)):
+                print(f"AVISO: Índice incompleto para {pdf_name}. Será reconstruído quando usado.")
+                continue
+                
+            # Verificar o tamanho dos arquivos
+            faiss_size = os.path.getsize(index_faiss)
+            pkl_size = os.path.getsize(index_pkl)
+            
+            if faiss_size < 1000 or pkl_size < 100:  # Tamanhos mínimos esperados
+                print(f"AVISO: Índice suspeito para {pdf_name} (tamanhos: faiss={faiss_size}B, pkl={pkl_size}B)")
+                print(f"       O índice será reconstruído quando o PDF for usado.")
+                
+        except Exception as e:
+            print(f"ERRO ao verificar índice {index_dir}: {e}")
+    
+    print("Verificação de índices concluída.")
 
-            if not os.path.exists(pdf_path):
-                index_path = os.path.join(INDICES_DIR, index_dir)
-                print(f"Removendo índice para PDF não encontrado: {pdf_name}")
-                try:
-                    shutil.rmtree(index_path)
-                except Exception as e:
-                    print(f"Erro ao remover índice: {e}")
+def verify_workspace_integrity():
+    """Verifica a integridade do ambiente de trabalho"""
+    print("\nVerificando integridade do ambiente de trabalho...")
+    
+    # Verificar diretórios principais
+    for directory in [INDICES_DIR, PDFS_DIR]:
+        if not os.path.exists(directory):
+            print(f"Criando diretório ausente: {directory}")
+            os.makedirs(directory)
+    
+    # Verificar arquivos PDF no diretório pdfs/
+    if os.path.exists(PDFS_DIR):
+        pdf_count = len([f for f in os.listdir(PDFS_DIR) if f.lower().endswith('.pdf')])
+        print(f"PDFs encontrados no diretório {PDFS_DIR}: {pdf_count}")
+    
+    # Verificar dependências críticas
+    try:
+        import faiss
+        print(f"Biblioteca FAISS verificada: {faiss.__version__}")
+    except (ImportError, AttributeError):
+        print("ALERTA: FAISS não encontrado ou versão não identificada!")
+
+    try:
+        import sentence_transformers
+        print(f"Sentence Transformers verificado: {sentence_transformers.__version__}")
+    except (ImportError, AttributeError):
+        print("ALERTA: Sentence Transformers não encontrado ou versão não identificada!")
+        
+    # Verificar Ollama
+    try:
+        import ollama
+        print("Biblioteca Ollama encontrada")
+    except ImportError:
+        print("ALERTA: Biblioteca Ollama não encontrada!")
+        
+    print("Verificação de ambiente concluída.")
 
 if __name__ == "__main__":
     print_header()
 
+    # Verificar integridade do ambiente
+    verify_workspace_integrity()
+    
+    # Limpar índices não utilizados
     cleanup_unused_indices()
 
     pdf_path = select_pdf()
@@ -340,11 +618,7 @@ if __name__ == "__main__":
                 print_help()
                 continue
 
-            start_time = time.time()
-            answer = chat.ask_optimized(user_question)
-            elapsed_time = time.time() - start_time
-
-            print(f"\nResposta ({elapsed_time:.1f}s):", answer)
+            chat.ask_optimized(user_question)
     except Exception as e:
         print(f"\nErro: {e}")
         print("Tente novamente com um arquivo PDF válido.")
