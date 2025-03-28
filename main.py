@@ -8,133 +8,91 @@ import sys
 from datetime import datetime
 import shutil
 import cachetools
+import ollama
+
 
 # Ignorar avisos para limpar a saída
 warnings.filterwarnings("ignore")
 
 load_dotenv()
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.llms import LlamaCpp
-from langchain.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+from functools import lru_cache # não usado, mas pode ser útil para otimização futura
+
+
+
 
 # Definir diretórios do projeto
 INDICES_DIR = "indices"
 PDFS_DIR = "pdfs"
-MODELS_DIR = "models"
 
 # Criar diretórios se não existirem
-for directory in [INDICES_DIR, PDFS_DIR, MODELS_DIR]:
+for directory in [INDICES_DIR, PDFS_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
         print(f"Diretório '{directory}' criado.")
-        
+
 # Função para formatar documentos
 def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    formatted_text = ""
+    print(f"Formatando {len(docs)} documentos recuperados:")
+    
+    for i, doc in enumerate(docs):
+        # Adicionar metadados como fonte se disponíveis
+        source_info = ""
+        if doc.metadata and 'source' in doc.metadata:
+            source_path = doc.metadata['source']
+            page_info = f", Página {doc.metadata.get('page', 'N/A')}" if 'page' in doc.metadata else ""
+            source_info = f"[Fonte: {os.path.basename(source_path)}{page_info}]"
         
-#@lru_cache(maxsize=None)        
+        # Adicionar índice do chunk e metadados ao log
+        chunk_preview = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+        print(f"Chunk {i+1}/{len(docs)} {source_info}:\n{chunk_preview}\n")
+        
+        # Adicionar separador claro entre chunks para o texto formatado
+        formatted_text += f"{doc.page_content}\n"
+        if source_info:
+            formatted_text += f"{source_info}\n"
+        formatted_text += "\n" + "-" * 40 + "\n"
+    
+    return formatted_text
+
 # Cache para armazenar índices de vectorstore previamente carregados
+_vector_store_cache = {}
 def get_vector_store(index_path, embeddings):
-    #embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    """Carrega e armazena em cache os índices de vetor para reutilização rápida"""
-    return FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization= True)
-
-# Cache para armazenar modelos LLM carregados
-# temperature=0.1,                    max_tokens=256,                    top_p=0.85,                    n_ctx=4096,                    repeat_penalty=1.1,                    verbose=False,                    n_batch=256
-#@lru_cache(maxsize=5)
-def get_llm_model(model_path, temperature=0.1, max_tokens=512, top_p=0.95, n_ctx=4096, repeat_penalty=1.1):
-    """Carrega e armazena em cache modelos LLM para reutilização rápida"""
-    # Reduced batch size for faster loading
-    # Added n_threads parameter for better CPU utilization
-    # Decreased verbose to False to reduce console output
-    return LlamaCpp(
-        model_path=model_path,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=top_p,
-        n_ctx=n_ctx,
-        repeat_penalty=repeat_penalty,
-        verbose=False,  # Changed from True to False to reduce console output
-        n_batch=64,     # Reduced from 256 to 64 for faster loading
-        n_threads=4     # Added to utilize multiple CPU cores efficiently
-        
-    )
-    
-def process_chunks_in_parallel(documents, text_splitter:RecursiveCharacterTextSplitter, max_workers=None):
-    """
-    Processa documentos em chunks paralelos para melhorar a performance.
-    
-    Args:
-    documents: Lista de documentos a serem processados
-    text_splitter: O divisor de texto a ser aplicado
-    max_workers: Número máximo de workers (None= automático baseado na CPU)
-    
-    Returns:
-        Lista de documentos divididos em chunks
-    """
-    
-    # Para processar um único documento
-    def process_document(document):
-        return text_splitter.split_documents(document)
-    
-    # Processar documentos em paralelo
-    chunks = []
-
-    # Process all documents directly instead of parallel processing
-    # which might be causing the tuple issue
-    for doc in documents:
-        split_docs = text_splitter.split_documents([doc])
-        chunks.extend(split_docs)
-
-    """  with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(process_document, documents))
-        
-    # Flatten os resultados
-    for result in results:
-        chunks.extend(result) """
-
-
-        
-    return chunks
-
+    if index_path not in _vector_store_cache:
+        _vector_store_cache[index_path] = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
+    return _vector_store_cache[index_path]
 # Classe para mostrar animação de loading
 class LoadingIndicator:
     def __init__(self, message="Processando"):
         self.message = message
         self.is_running = False
         self.animation_thread = None
-        
+
     def __enter__(self):
         self.start()
         return self
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
-    
+
     def start(self):
         self.is_running = True
         self.animation_thread = threading.Thread(target=self._animate)
         self.animation_thread.daemon = True
         self.animation_thread.start()
-        
+
     def stop(self):
         self.is_running = False
         if self.animation_thread:
             self.animation_thread.join()
-        # Limpar a linha após parar a animação
         sys.stdout.write('\r' + ' ' * (len(self.message) + 10) + '\r')
         sys.stdout.flush()
-        print("")  # Adicionado: nova linha para limpar a saída
-        
+        print("")  # Nova linha para limpar a saída
+
     def _animate(self):
         animation = "|/-\\"
         idx = 0
@@ -149,410 +107,276 @@ class LoadingIndicator:
 def run_with_timeout(func, args=(), kwargs={}, timeout_duration=120):
     result = [None]
     error = [None]
-    
+
     def target():
         try:
             result[0] = func(*args, **kwargs)
         except Exception as e:
             error[0] = e
-    
+
     thread = threading.Thread(target=target)
     thread.daemon = True
     thread.start()
     thread.join(timeout_duration)
-    
+
     if thread.is_alive():
         return None, TimeoutError(f"A operação excedeu o limite de tempo de {timeout_duration} segundos")
-    
+
     if error[0]:
         return None, error[0]
-        
+
     return result[0], None
 
 class ChatWithPDF:
     def __init__(self, pdf_path):
-        # Verificar se o arquivo existe
         if not os.path.exists(pdf_path):
-            # Verificar se está na pasta pdfs
             pdf_in_dir = os.path.join(PDFS_DIR, os.path.basename(pdf_path))
             if os.path.exists(pdf_in_dir):
                 pdf_path = pdf_in_dir
             else:
                 raise ValueError(f"Arquivo não encontrado: {pdf_path}")
-        
-        # Se o arquivo não estiver na pasta de PDFs e existir, copie-o para lá
+
         if not pdf_path.startswith(PDFS_DIR):
             new_path = os.path.join(PDFS_DIR, os.path.basename(pdf_path))
             if not os.path.exists(new_path):
                 shutil.copy2(pdf_path, new_path)
                 print(f"PDF copiado para {new_path}")
             pdf_path = new_path
-            
+
         self.pdf_path = pdf_path
         self.pdf_basename = os.path.basename(self.pdf_path).split('.')[0]
         self.index_path = os.path.join(INDICES_DIR, f"index_{self.pdf_basename}")
-        self.response_cache = cachetools.TTLCache(maxsize=100, ttl=3600)  # Cache para respostas frequentes
-        self.qa_method = None  # Método detectado para consultar o qa
+        self.response_cache = cachetools.TTLCache(maxsize=100, ttl=3600)
+        
+        # Configurações de chunking - ajustáveis
+        self.chunk_size = 1500       # Aumentado de 1000 para capturar mais contexto
+        self.chunk_overlap = 150     # Aumentado de 30 para manter mais contexto entre chunks
+        self.separator = "\n"        # Separador para chunking
+        
+        # Configurações de recuperação
+        self.retrieval_k = 6         # Número de documentos a recuperar
+        self.diversity_lambda = 0.3  # Ajustado para um equilíbrio entre relevância e diversidade
+        
         self.setup()
-    
-    # Adicionado para verificar existência do índice
+
     def index_exists(self):
         return os.path.exists(self.index_path) and os.listdir(self.index_path)
-    
-    def determine_qa_method(self):
-        """Determina qual método de consulta funciona corretamente com a instância qa."""
-        # Using a very simple question to test
-        test_question = "teste"
-        
-        # Try invoke first as it's most common in newer LangChain versions
-        try:
-            _ = self.qa.invoke({"input": test_question})
-            print("Método 'invoke' detectado para processar perguntas.")
-            self.qa_method = lambda q: self.qa.invoke({"input": q})
-            return
-        except Exception as e:
-            print(f"Método 'invoke' falhou: {str(e)[:100]}...")  # Show only first 100 chars of error
-        
-        # Try direct call syntax
-        try:
-            _ = self.qa({"query": test_question})  # Changed from "question" to "query" which works in some versions
-            print("Método 'call' detectado para processar perguntas.")
-            self.qa_method = lambda q: self.qa({"query": q})
-            return
-        except Exception:
-            try:
-                _ = self.qa({"question": test_question})
-                print("Método 'call' (question) detectado para processar perguntas.")
-                self.qa_method = lambda q: self.qa({"question": q})
-                return
-            except Exception as e:
-                print(f"Método 'call' falhou: {str(e)[:100]}...")
-        
-        # Try run method
-        try:
-            _ = self.qa.run(test_question)
-            print("Método 'run' detectado para processar perguntas.")
-            self.qa_method = lambda q: self.qa.run(q)
-            return
-        except Exception as e:
-            print(f"Método 'run' falhou: {str(e)[:100]}...")
-        
-        # Enhanced fallback method with better error handling
-        print("Usando método de fallback direto para processar perguntas.")
-        def enhanced_fallback(q):
-            try:
-                # First try to get documents directly
-                docs = self.retriever.get_relevant_documents(q)
-                if not docs:
-                    return {"result": "Não foram encontrados documentos relevantes para essa pergunta."}
-                
-                # Process each document to extract content
-                contents = []
-                for i, doc in enumerate(docs[:2]):  # Only use top 2 results to avoid overwhelming responses
-                    try:
-                        # Handle both Document objects and (Document, score) tuples
-                        if isinstance(doc, tuple) and len(doc) >= 1:
-                            content = doc[0].page_content if hasattr(doc[0], 'page_content') else str(doc[0])
-                        elif hasattr(doc, "page_content"):
-                            content = doc.page_content
-                        else:
-                            content = str(doc)
-                        
-                        contents.append(content)
-                    except Exception as e:
-                        print(f"Erro ao processar documento {i}: {e}")
-                
-                if not contents:
-                    return {"result": "Não foi possível extrair conteúdo dos documentos recuperados."}
-                
-                # Simple response for now - just return the most relevant content
-                return {"result": "Baseado no documento:\n\n" + contents[0]}
-                
-            except Exception as e:
-                print(f"Erro no método fallback: {e}")
-                return {"result": f"Ocorreu um erro ao processar a pergunta: {str(e)}"}
-        
-        self.qa_method = enhanced_fallback
 
-    
     def setup(self):
         print(f"Preparando para processar: {self.pdf_path}")
-        
-        # Carregar embeddings
+
         with LoadingIndicator("Carregando embeddings") as loading:
-            embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        
-        # Verificar se já existe um índice para este PDF
+            # Modelo de embeddings mais robusto para melhor captura semântica
+            embeddings = HFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", show_progress=True)
+            print(f"Modelo de embeddings carregado: sentence-transformers/all-MiniLM-L6-v2")
+
         if self.index_exists():
             print(f"Índice encontrado para {self.pdf_path}. Carregando índice existente...")
             with LoadingIndicator("Carregando índice") as loading:
                 self.vector_store = get_vector_store(self.index_path, embeddings)
-            print("Índice carregado com sucesso!")
+            print(f"Índice carregado com sucesso: {self.index_path}")
+            
+            # Verificar a integridade do índice
+            try:
+                test_query = "teste"
+                docs = self.vector_store.similarity_search(test_query, k=1)
+                print(f"Índice verificado e funcional - encontrado {len(docs)} documento(s) de teste")
+            except Exception as e:
+                print(f"AVISO: Teste de índice falhou: {e}")
+                print("Recriando índice para garantir integridade...")
+                self._create_index(embeddings)
         else:
-            print(f"Processando o PDF e criando novo índice...")
-            with LoadingIndicator("Lendo PDF") as loading:
-                loader = PyPDFLoader(file_path=self.pdf_path)
-                documents = loader.load()
+            print(f"Nenhum índice encontrado. Processando o PDF e criando novo índice...")
+            self._create_index(embeddings)
 
-                print(f"Document type: {type(documents)}")
-                print(f"First document type: {type(documents[0]) if documents else 'No documents'}")
-                print(f"Document structure: {documents[0].__dict__ if documents else 'No documents'}")
-            
-            # Dividir em chunks com sobreposição para melhor contexto
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=0,
-                separators=[
-                "\n\n",
-                "\n",
-                " ",
-                ".",
-                ",",
-                "\u200b",  # Zero-width space
-                "\uff0c",  # Fullwidth comma
-                "\u3001",  # Ideographic comma
-                "\uff0e",  # Fullwidth full stop
-                "\u3002",  # Ideographic full stop
-                ""
-                ]
-            )            
-            
-            with LoadingIndicator("Dividindo documento em chunks") as loading:
-                docs = process_chunks_in_parallel(documents, text_splitter)
-                
-            print(f"Criando embeddings e índice de pesquisa...")
-            with LoadingIndicator("Criando vetores") as loading:
-                self.vector_store = FAISS.from_documents(docs, embeddings)
-                # Criar o diretório se não existir
-                if not os.path.exists(self.index_path):
-                    os.makedirs(self.index_path)
-                self.vector_store.save_local(self.index_path)
-            print(f"Índice criado e salvo em {self.index_path}")
-        
-        # Carregar o modelo LLM
-        print("Carregando modelo de linguagem local...")
-        
-        # Caminho para o modelo
-        str_model = "small"
-        default_model_path = os.path.join(MODELS_DIR, f"ggml-model-{str_model}.bin")
-        
-        # Procurar por qualquer modelo disponível
-        model_path = None
-        if os.path.exists(default_model_path):
-            model_path = default_model_path
-        else:
-            model_files = glob.glob(os.path.join(MODELS_DIR, "*.bin")) + glob.glob(os.path.join(MODELS_DIR, "*.gguf"))
-            if model_files:
-                model_path = model_files[0]
-                print(f"Usando modelo encontrado: {model_path}")
-        
-        if not model_path:
-            print("\nATENÇÃO: Nenhum modelo encontrado!")
-            print("Por favor, baixe um modelo GGML/GGUF (como o Llama-2-7B-Chat) e coloque-o no diretório 'models'")
-            print("Você pode baixar modelos em: https://huggingface.co/TheBloke")
-            print("Recomendado: Llama-2-7B-Chat-GGUF ou mistral-7B-instruct-v0.2.Q4_K_M.gguf")
-            raise ValueError("Nenhum modelo LLM encontrado. Baixe um modelo e reinicie a aplicação.")
-        
-        # Template de prompt para respostas detalhadas
-        prompt_template = """
-            Você é um especialista em análise técnica de documentos. Sua resposta DEVE:
-            1. Basear-se exclusivamente no conteúdo do PDF fornecido
-            2. Usar estrutura clara com tópicos numerados
-            3. Evitar qualquer inferência não explícita
-            4. Indicar claramente quando informações são faltantes
-            
-            Contexto do documento: {context}
-            Pergunta: {question}
-            
-            Resposta (formato livre, mas preferencialmente com marcas):
-            [Conclusão Principal]
-            [Detalhamento por tópicos]
-            [Fontes no documento: página X]
-        """
+        # Configurar o retriever com parâmetros ajustados
+        print(f"Configurando retriever com k={self.retrieval_k} e lambda_mult={self.diversity_lambda}...")
+        self.retriever = self.vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                'k': self.retrieval_k,
+                'lambda_mult': self.diversity_lambda
+            }
+        )
+        print("Retriever configurado com sucesso!")
 
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
+    def _create_index(self, embeddings):
+        """Método interno para criar o índice de um PDF"""
+        print(f"Iniciando processamento do PDF: {self.pdf_path}")
+        
+        with LoadingIndicator("Lendo PDF") as loading:
+            loader = PyPDFLoader(file_path=self.pdf_path)
+            documents = loader.load()
+            
+        print(f"\n{'=' * 50}")
+        print(f"ESTATÍSTICAS DO DOCUMENTO:")
+        print(f"{'=' * 50}")
+        print(f"Total de páginas lidas: {len(documents)}")
+        total_tokens = sum(len(doc.page_content.split()) for doc in documents)
+        total_chars = sum(len(doc.page_content) for doc in documents)
+        print(f"Total de tokens: {total_tokens}")
+        print(f"Total de caracteres: {total_chars}")
+        print(f"{'=' * 50}")
+        
+        # Exibir amostra de cada página para debug
+        print("\nANÁLISE DE CONTEÚDO DO DOCUMENTO:")
+        for i, doc in enumerate(documents):
+            content_preview = doc.page_content[:150]
+            print(f"\nPágina {i+1} ({len(doc.page_content)} caracteres):")
+            print(f"{content_preview}...")
+            if i >= 2 and len(documents) > 5:  # Limitar a exibição para documentos grandes
+                print(f"... e mais {len(documents) - 3} páginas")
+                break
+
+        # Criar um text splitter com configurações aprimoradas
+        print(f"\nConfigurando text splitter: chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+        text_splitter = CharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            separator=self.separator
         )
 
-        # Configurando o LlamaCpp com o modelo local - com timeout
-        try:
-            # Run model loading with timeout to avoid hanging
-            result, error = run_with_timeout(
-                func=lambda: get_llm_model(model_path, max_tokens=256),  # Reduced max_tokens for faster responses
-                timeout_duration=30  # Lower timeout for model loading
-            )
-            
-            if error:
-                raise ValueError(f"Tempo excedido ao carregar modelo: {error}")
-                
-            self.llm = result
-            
-            # Criar a cadeia de documentos (equivalente ao chain_type="stuff")
-            combine_docs_chain = create_stuff_documents_chain(self.llm, PROMPT)
-            
-            # No método setup(), após criar o vector_store, adicione:
-            self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
-
-            # Criação da cadeia LCEL
-            self.qa = (
-                {
-                    "context": self.retriever | format_docs,
-                    "question": RunnablePassthrough(),
-                }
-                | PROMPT
-                | self.llm
-                | StrOutputParser()
-            )
-
-            self.qa_method = lambda q: {"result": self.qa.invoke({"input": q})}
-            
-            print("Modelo local carregado e pronto para responder perguntas!")
-            
-            try:
-                self.determine_qa_method()
-            except Exception as e:
-                print(f"Erro ao determinar método QA: {e}")
-                # Definir método QA de fallback inline
-                from functools import partial
-                self.qa_method = partial(self._fallback_qa_method)
-
-            
-                
-        except Exception as e:
-            print(f"Erro ao carregar o modelo LlamaCpp: {e}")
-            raise ValueError(f"Falha ao inicializar o modelo LLM: {e}")
+        with LoadingIndicator("Dividindo documento em chunks") as loading:
+            docs = text_splitter.split_documents(documents)
         
-    # E adicionar o método de fallback à classe:
-    def _fallback_qa_method(self, question):
-        docs = self.retriever.get_relevant_documents(question)
-        if not docs:
-            return {"result": "Não encontrei informações relevantes no documento."}
+        print(f"\nDocumento dividido em {len(docs)} chunks")
+        print(f"Tamanho médio dos chunks: {sum(len(doc.page_content) for doc in docs) / len(docs):.1f} caracteres")
         
-        context = docs[0].page_content
-        # Usar o LLM diretamente
-        self.response = self.llm(f"Documento: {context}\n\nPergunta: {question}\n\nResposta detalhada:")
-        return {"result": self.response}
+        # Mostrar amostra dos chunks para debug
+        if len(docs) > 0:
+            print("\nAMOSTRA DE CHUNKS:")
+            for i, doc in enumerate(docs[:3]):  # Mostrar apenas os 3 primeiros chunks
+                print(f"\nChunk {i+1}/{len(docs)} - {len(doc.page_content)} caracteres:")
+                print(f"{doc.page_content[:150]}...")
+            if len(docs) > 3:
+                print(f"... e mais {len(docs) - 3} chunks")
 
+        print(f"\nCriando embeddings e índice FAISS...")
+        with LoadingIndicator("Criando vetores e índice") as loading:
+            self.vector_store = FAISS.from_documents(docs, embeddings)
+            if not os.path.exists(self.index_path):
+                os.makedirs(self.index_path)
+            self.vector_store.save_local(self.index_path)
+        print(f"Índice FAISS criado e salvo em {self.index_path}")
+        print(f"Dimensão dos vetores: {self.vector_store._index.d}")
+        print(f"Número de vetores no índice: {self.vector_store._index.ntotal}")
 
     def ask_optimized(self, question):
-        """Versão otimizada do método ask com timeouts mais curtos e melhor tratamento de erros"""
-        if not self.qa:
-            raise ValueError("O sistema ainda não foi inicializado corretamente.")
-        
-        # Verificar cache
+        """Método otimizado para consultar o documento com base em uma pergunta"""
         if question in self.response_cache:
             print("Resposta encontrada no cache!")
             return self.response_cache[question]
-        
-        print(f"Processando pergunta: {question}")
+
+        print(f"\nProcessando pergunta: '{question}'")
         max_retries = 2
-        
+
         for attempt in range(max_retries):
-            # Usar timeout para evitar que o modelo fique preso
             with LoadingIndicator(f"Pensando sobre sua pergunta (tentativa {attempt+1}/{max_retries})") as loading:
                 try:
-                    # Reduced timeout
-                    result, error = run_with_timeout(
-                        func=lambda: self.qa_method(question),
-                        timeout_duration=30  # Reduced from 120 to 30 seconds
+                    # Monitorar tempo de recuperação
+                    retrieval_start = time.time()
+                    
+                    # Recuperar documentos relevantes
+                    docs = self.retriever.get_relevant_documents(question)
+                    retrieval_time = time.time() - retrieval_start
+                    
+                    print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(docs)} documentos encontrados")
+                    
+                    if not docs:
+                        print("ALERTA: Nenhum documento relevante encontrado")
+                        return "Não foram encontrados documentos relevantes para essa pergunta."
+
+                    # Formatar os documentos recuperados e criar contexto
+                    context = format_docs(docs)
+                    context_size = len(context)
+                    print(f"Contexto gerado: {context_size} caracteres")
+                    
+                    if context_size > 15000:
+                        print(f"AVISO: Contexto muito grande ({context_size} caracteres).")
+                    
+                    # Monitorar tempo de geração da resposta
+                    generation_start = time.time()
+                    
+                    # Usar Ollama para gerar a resposta
+                    print("Enviando consulta para o modelo Ollama...")
+                    stream = ollama.chat(
+                        model="llama3.2", 
+                        messages=[
+                            {   
+                                'role': 'user',
+                                'content': f'''Você é um assistente de QA especializado em responder perguntas com base em documentos. 
+Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido. 
+Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída. 
+Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.
+
+Contexto: {context}
+
+Pergunta: {question}
+
+Resposta:'''
+                            },
+                        ],
+                        stream=True, 
+                        options={
+                            "temperature": 0.1,  # Baixa temperatura para respostas mais determinísticas
+                            "num_predict": 2048,  # Limite de tokens para prever
+                            "top_k": 40,         # Número de tokens mais prováveis a considerar
+                            "top_p": 0.9         # Probabilidade cumulativa para amostragem de núcleo
+                        }
                     )
                     
-                    # If successful, break the retry loop
-                    if not error:
-                        break
-                        
-                    print(f"Tentativa {attempt+1} falhou com erro: {error}. " + 
-                        ("Tentando novamente..." if attempt < max_retries-1 else ""))
-                        
+                    # Processar os chunks da resposta
+                    answer = ""          
+                    print("\nResposta: ", end='', flush=True)  # Iniciar a exibição da resposta
+                    
+                    for chunk in stream:
+                        content = chunk['message']['content']
+                        print(content, end='', flush=True)  # Exibir cada chunk em tempo real
+                        answer += content  # Concatenar para formar a resposta completa
+                    
+                    generation_time = time.time() - generation_start
+                    print(f"\n\nResposta gerada em {generation_time:.2f}s")
+                    
+                    # Salvar no cache para consultas futuras
+                    self.response_cache[question] = answer
+                    return answer
+
                 except Exception as e:
-                    print(f"Erro ao processar a pergunta: {e}")
-                    error = e
-        
-        # If we have an error after all retries
-        if error and isinstance(error, TimeoutError):
-            # Fallback to direct document retrieval
-            try:
-                docs = self.retriever
-                if docs:
-                    response = f"Não foi possível obter uma resposta completa, mas encontrei este trecho relevante:\n\n{docs[0].page_content}"
-                else:
-                    response = f"Não foi possível obter uma resposta: {str(error)}"
-            except Exception:
-                response = f"Não foi possível obter uma resposta: {str(error)}"
-                
-            self.response_cache[question] = response
-            return response
-        
-        # Extrair o resultado (formato mudou)
-        if isinstance(result, dict):
-            if "answer" in result:
-                response = result["answer"]
-            elif "result" in result:
-                response = result["result"]
-            else:
-                response = str(result)
-        elif isinstance(result, str):
-            response = result
-        else:
-            # Fallback para outros formatos
-            response = str(result)
-        
-        # Adicionar verificação para evitar respostas simples
-        if len(response.split()) < 20 and question.lower() not in ["teste", "test"]:
-            print("DEBUG: Resposta muito curta, forçando processamento pelo LLM")
-            try:
-                # Force LLM processing
-                context = self.retriever.get_relevant_documents(question)[0].page_content
-                response = self.llm(f"Contexto do documento PDF: {context}\n\nPergunta: {question}\n\nForneça uma resposta detalhada:")
-            except Exception as e:
-                print(f"DEBUG: Erro ao forçar processamento: {e}")
-            
-        # Armazenar no cache
-        self.response_cache[question] = response
-        
-        return response
+                    print(f"ERRO: Tentativa {attempt+1} falhou com erro: {str(e)}")
+                    import traceback
+                    print(f"Detalhes do erro: {traceback.format_exc()}")
+                    
+                    if attempt == max_retries - 1:
+                        return f"Erro ao processar a pergunta: {str(e)}"
 
 def list_available_pdfs():
-    """Lista todos os PDFs disponíveis na pasta pdfs e no diretório atual."""
-    # PDFs na pasta dedicada
     pdfs_in_dir = [os.path.join(PDFS_DIR, f) for f in os.listdir(PDFS_DIR) if f.lower().endswith('.pdf')]
-    
-    # PDFs no diretório atual (que não estejam na pasta pdfs)
     pdfs_in_current = [f for f in glob.glob("*.pdf") if not f.startswith(PDFS_DIR)]
-    
-    # Combinar as listas, priorizando os da pasta pdfs
     all_pdfs = pdfs_in_dir + pdfs_in_current
-    
     return all_pdfs
 
 def has_index(pdf_path):
-    """Verifica se um PDF já possui índice criado."""
     basename = os.path.basename(pdf_path).split('.')[0]
     index_path = os.path.join(INDICES_DIR, f"index_{basename}")
     return os.path.exists(index_path) and len(os.listdir(index_path)) > 0
 
 def select_pdf():
-    """Permite ao usuário selecionar um PDF dentre os disponíveis."""
     all_pdfs = list_available_pdfs()
-    
+
     if not all_pdfs:
         print("\nNenhum PDF encontrado no sistema.")
         pdf_path = input("Digite o caminho completo para um arquivo PDF: ")
         if not pdf_path or not os.path.exists(pdf_path):
             return None
         return pdf_path
-    
-    # Mostrar os PDFs disponíveis, indicando quais já possuem índice
+
     print("\nPDFs disponíveis:")
     for i, pdf in enumerate(all_pdfs, 1):
         indexed = " [indexado]" if has_index(pdf) else ""
         print(f"{i}. {os.path.basename(pdf)}{indexed}")
-    
-    # Permitir que o usuário selecione um PDF ou digite um novo caminho
+
     choice = input("\nDigite o número do PDF ou o caminho completo para um novo arquivo: ")
-    
-    # Se for um número, seleciona da lista
+
     if choice.isdigit():
         index = int(choice) - 1
         if 0 <= index < len(all_pdfs):
@@ -560,14 +384,12 @@ def select_pdf():
         else:
             print("Número inválido.")
             return None
-    # Se não for um número, assume que é um caminho
     elif choice.strip():
         if os.path.exists(choice):
             return choice
         else:
             print(f"Arquivo não encontrado: {choice}")
             return None
-    # Se estiver vazio, retorna None
     else:
         return None
 
@@ -588,67 +410,136 @@ def print_help():
     print("- Extraia todas as informações técnicas sobre [assunto].")
 
 def cleanup_unused_indices():
-    """Remove índices para PDFs que não existem mais."""
+    """Remover índices de PDFs não encontrados e verificar integridade dos índices"""
     if not os.path.exists(INDICES_DIR):
         return
+
+    print("\nVerificando integridade e limpando índices não utilizados...")
+    
+    # Listar todos os índices existentes
+    indices = [d for d in os.listdir(INDICES_DIR) if os.path.isdir(os.path.join(INDICES_DIR, d)) and d.startswith("index_")]
+    print(f"Encontrados {len(indices)} índices no diretório {INDICES_DIR}")
+    
+    # Verificar cada índice
+    for index_dir in indices:
+        pdf_name = index_dir.replace("index_", "") + ".pdf"
+        pdf_path = os.path.join(PDFS_DIR, pdf_name)
+        index_path = os.path.join(INDICES_DIR, index_dir)
         
-    for index_dir in os.listdir(INDICES_DIR):
-        if index_dir.startswith("index_"):
-            pdf_name = index_dir.replace("index_", "") + ".pdf"
-            pdf_path = os.path.join(PDFS_DIR, pdf_name)
+        # Verificar se o PDF correspondente existe
+        if not os.path.exists(pdf_path):
+            print(f"LIMPEZA: Removendo índice para PDF não encontrado: {pdf_name}")
+            try:
+                shutil.rmtree(index_path)
+            except Exception as e:
+                print(f"Erro ao remover índice: {e}")
+            continue
+        
+        # Verificar integridade do índice
+        try:
+            # Verificar se os arquivos necessários existem
+            index_faiss = os.path.join(index_path, "index.faiss")
+            index_pkl = os.path.join(index_path, "index.pkl")
             
-            if not os.path.exists(pdf_path):
-                index_path = os.path.join(INDICES_DIR, index_dir)
-                print(f"Removendo índice para PDF não encontrado: {pdf_name}")
-                try:
-                    shutil.rmtree(index_path)
-                except Exception as e:
-                    print(f"Erro ao remover índice: {e}")
+            if not (os.path.exists(index_faiss) and os.path.exists(index_pkl)):
+                print(f"AVISO: Índice incompleto para {pdf_name}. Será reconstruído quando usado.")
+                continue
+                
+            # Verificar o tamanho dos arquivos
+            faiss_size = os.path.getsize(index_faiss)
+            pkl_size = os.path.getsize(index_pkl)
+            
+            if faiss_size < 1000 or pkl_size < 100:  # Tamanhos mínimos esperados
+                print(f"AVISO: Índice suspeito para {pdf_name} (tamanhos: faiss={faiss_size}B, pkl={pkl_size}B)")
+                print(f"       O índice será reconstruído quando o PDF for usado.")
+                
+        except Exception as e:
+            print(f"ERRO ao verificar índice {index_dir}: {e}")
+    
+    print("Verificação de índices concluída.")
+
+def verify_workspace_integrity():
+    """Verifica a integridade do ambiente de trabalho"""
+    print("\nVerificando integridade do ambiente de trabalho...")
+    
+    # Verificar diretórios principais
+    for directory in [INDICES_DIR, PDFS_DIR]:
+        if not os.path.exists(directory):
+            print(f"Criando diretório ausente: {directory}")
+            os.makedirs(directory)
+    
+    # Verificar arquivos PDF no diretório pdfs/
+    if os.path.exists(PDFS_DIR):
+        pdf_count = len([f for f in os.listdir(PDFS_DIR) if f.lower().endswith('.pdf')])
+        print(f"PDFs encontrados no diretório {PDFS_DIR}: {pdf_count}")
+    
+    # Verificar dependências críticas
+    try:
+        import faiss
+        print(f"Biblioteca FAISS verificada: {faiss.__version__}")
+    except (ImportError, AttributeError):
+        print("ALERTA: FAISS não encontrado ou versão não identificada!")
+
+    try:
+        import sentence_transformers
+        print(f"Sentence Transformers verificado: {sentence_transformers.__version__}")
+    except (ImportError, AttributeError):
+        print("ALERTA: Sentence Transformers não encontrado ou versão não identificada!")
+        
+    # Verificar Ollama
+    try:
+        import ollama
+        print("Biblioteca Ollama encontrada")
+    except ImportError:
+        print("ALERTA: Biblioteca Ollama não encontrada!")
+        
+    print("Verificação de ambiente concluída.")
 
 if __name__ == "__main__":
     print_header()
+
+    # Verificar integridade do ambiente
+    verify_workspace_integrity()
     
     # Limpar índices não utilizados
     cleanup_unused_indices()
-    
-    # Permitir que o usuário selecione um PDF
+
     pdf_path = select_pdf()
-    
+
     if not pdf_path:
         print("\nNenhum PDF selecionado. Encerrando o programa.")
         exit()
-        
+
     try:
         chat = ChatWithPDF(pdf_path)
-        
-        # Interface de chat
+
         print("\n" + "=" * 70)
         print(f"{'MODO DE CHAT - RESPOSTAS DETALHADAS':^70}")
         print("=" * 70)
         print("Digite suas perguntas sobre o documento para obter informações detalhadas.")
         print("Digite 'sair', 'exit' ou 'quit' para finalizar.")
         print("Digite 'ajuda' ou 'help' para ver sugestões de perguntas.")
-        
+
         while True:
             user_question = input("\nPergunta: ")
             question_lower = user_question.lower()
-            
+
             if question_lower in ["sair", "quit", "exit"]:
                 print("\nEncerrando chat. Até mais!")
                 break
-                
+
             if not question_lower.strip():
                 print("\nPor favor, digite uma pergunta.")
                 continue
-            
+
             if question_lower in ["ajuda", "help"]:
                 print_help()
                 continue
-                
+
             start_time = time.time()
             answer = chat.ask_optimized(user_question)
             elapsed_time = time.time() - start_time
-            
+
             print(f"\nResposta ({elapsed_time:.1f}s):", answer)
     except Exception as e:
         print(f"\nErro: {e}")
