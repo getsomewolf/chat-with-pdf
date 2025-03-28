@@ -154,11 +154,11 @@ class ChatWithPDF:
         self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
         
         # Configurações de recuperação melhoradas
-        self.retrieval_k = 10         # Aumentado para capturar mais contexto potencialmente relevante
+        self.retrieval_k = 3         # Aumentado para capturar mais contexto potencialmente relevante
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
-        self.force_reindex = False
+        self.force_reindex = True
         
         # Inicialização
         self.setup()
