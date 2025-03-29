@@ -154,7 +154,11 @@ class ChatWithPDF:
         self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
         
         # Configurações de recuperação melhoradas
+<<<<<<< Updated upstream
         self.retrieval_k = 10         # Aumentado para capturar mais contexto potencialmente relevante
+=======
+        self.retrieval_k = 4         # Aumentado para capturar mais contexto potencialmente relevante
+>>>>>>> Stashed changes
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
@@ -206,8 +210,8 @@ class ChatWithPDF:
             search_type="mmr",  # Usar Maximum Marginal Relevance para melhor diversidade
             search_kwargs={
                 'k': self.retrieval_k,
-                'lambda_mult': self.diversity_lambda,
-                'fetch_k': self.retrieval_k * 2  # Buscar mais candidatos para selecionar os mais diversos
+                'lambda_mult': self.diversity_lambda,  # Ajuste para diversidade                
+                'fetch_k': self.retrieval_k * 5  # Buscar mais candidatos para selecionar os mais diversos
             }
         )
         print("Retriever configurado com sucesso!")
@@ -217,7 +221,7 @@ class ChatWithPDF:
         print(f"Iniciando processamento do PDF: {self.pdf_path}")
         
         with LoadingIndicator("Lendo PDF") as loading:
-            loader = PyPDFLoader(file_path=self.pdf_path)
+            loader = PyPDFLoader(file_path=self.pdf_path, extract_images=True)
             documents = loader.load()
             
         print(f"\n{'=' * 50}")
@@ -307,7 +311,7 @@ class ChatWithPDF:
             # Para cada subconsulta, recuperar documentos relevantes
             for sub_q in sub_queries:
                 print(f"\nBuscando por: '{sub_q}'")
-                sub_docs = self.retriever.get_relevant_documents(sub_q)
+                sub_docs = self.retriever.invoke(sub_q)
                 print(f"  Encontrados {len(sub_docs)} documentos relevantes")
                 all_docs.extend(sub_docs)
             
@@ -325,7 +329,7 @@ class ChatWithPDF:
         else:
             # Para consultas simples, usar o método padrão
             print("Usando método de recuperação padrão para consulta simples")
-            return self.retriever.get_relevant_documents(query)
+            return self.retriever.invoke(query)
 
     def ask_optimized(self, question):
         """Método otimizado para consultar o documento com base em uma pergunta"""
