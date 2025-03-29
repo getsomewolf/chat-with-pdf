@@ -154,11 +154,7 @@ class ChatWithPDF:
         self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
         
         # Configurações de recuperação melhoradas
-<<<<<<< Updated upstream
-        self.retrieval_k = 10         # Aumentado para capturar mais contexto potencialmente relevante
-=======
         self.retrieval_k = 4         # Aumentado para capturar mais contexto potencialmente relevante
->>>>>>> Stashed changes
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
@@ -211,7 +207,7 @@ class ChatWithPDF:
             search_kwargs={
                 'k': self.retrieval_k,
                 'lambda_mult': self.diversity_lambda,  # Ajuste para diversidade                
-                'fetch_k': self.retrieval_k * 5  # Buscar mais candidatos para selecionar os mais diversos
+                'fetch_k': self.retrieval_k * 2  # Buscar mais candidatos para selecionar os mais diversos
             }
         )
         print("Retriever configurado com sucesso!")
@@ -381,11 +377,11 @@ class ChatWithPDF:
                         {   
                             'role': 'user',
                             'content': f'''Você é um assistente de QA especializado em responder perguntas com base em documentos. 
-Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido.
+Sua tarefa é fornecer respostas completas e precisas, sempre citando entre aspas e formatado a fonte das informações com base no contexto fornecido.
 Considere todas as partes da pergunta e certifique-se de responder a cada aspecto.
-Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída.
+Use trechos diretos do contexto quando possível e indique claramente de onde a informação (página, seção, parágrafo) foi extraída.
 Se apenas uma parte da resposta estiver disponível no contexto, forneça o que for possível encontrar e indique o que está faltando.
-Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.
+Se não houver informações relevantes no contexto, informe que não há dados disponíveis. 
 
 Contexto: {context}
 
@@ -394,24 +390,30 @@ Pergunta: {question}
 Resposta:'''
                         },
                     ],
-                    stream=True, 
-                    options={
-                        "temperature": 0.1,  # Baixa temperatura para respostas mais determinísticas
-                        "num_predict": 2048,  # Limite de tokens para prever
-                        "top_k": 40,         # Número de tokens mais prováveis a considerar
-                        "top_p": 0.9         # Probabilidade cumulativa para amostragem de núcleo
-                    }
+                    stream=True 
+                    #options={
+                    #    "temperature": 0.1,  # Baixa temperatura para respostas mais determinísticas
+                    #    "num_predict": 2048,  # Limite de tokens para prever
+                    #    "top_k": 40,         # Número de tokens mais prováveis a considerar
+                    #    "top_p": 0.9         # Probabilidade cumulativa para amostragem de núcleo
+                    #}
                 )
                 
                 # Processar os chunks da resposta
                 answer = ""          
-                # Linha completamente limpa antes de iniciar a resposta
-                print("\nGerando resposta:", end='', flush=True)
+                # Linha completamente limpa antes de iniciar a resposta                
                 
+                """ loading_message = "Thinking"
+                loading = LoadingIndicator(loading_message)
+                loading.start() """
+                
+                print("\nGerando resposta:", end='', flush=True)                
                 for chunk in stream:
                     content = chunk['message']['content']
                     answer += content  # Concatenar para formar a resposta completa
                     print(content, end='', flush=True)  # Imprimir cada chunk em tempo real
+                
+                #loading.stop()
                 
                 # Finalizar com informações sobre o tempo
                 generation_time = time.time() - generation_start
