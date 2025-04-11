@@ -21,6 +21,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
 from langchain_community.vectorstores import FAISS
 from functools import lru_cache # não usado, mas pode ser útil para otimização futura
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document # Pode ser útil
 
 
 
@@ -160,6 +162,11 @@ class ChatWithPDF:
         # Configuração para override manual quando necessário
         self.force_reindex = False
         
+        # Configurações para a busca híbrida
+        self.initial_vector_k = 50 # K para a busca vetorial inicial (ampla)
+        self.vector_distance_threshold = 1.0 # Threshold de distância L2 (menor = mais similar). AJUSTAR CONFORME NECESSÁRIO!
+        self.final_bm25_k = 6 # K final após o BM25
+        
         # Inicialização
         self.setup()
 
@@ -178,11 +185,18 @@ class ChatWithPDF:
             )
             print(f"Modelo de embeddings carregado: sentence-transformers/all-mpnet-base-v2")
 
+        # Armazenar todos os chunks para uso posterior no BM25 se necessário recriar índice
+        self.all_chunks = None
+
         if self.index_exists() and not self.force_reindex:
             print(f"Índice encontrado para {self.pdf_path}. Carregando índice existente...")
             with LoadingIndicator("Carregando índice") as loading:
                 self.vector_store = get_vector_store(self.index_path, embeddings)
             print(f"Índice carregado com sucesso: {self.index_path}")
+            
+            print("Garantindo que os chunks estejam disponíveis para BM25...")
+            self._ensure_chunks_available(embeddings)
+
             
             # Verificar a integridade do índice
             try:
@@ -211,6 +225,14 @@ class ChatWithPDF:
             }
         )
         print("Retriever configurado com sucesso!")
+        
+    def _ensure_chunks_available(self, embeddings):
+        """Carrega ou gera chunks se não estiverem na memória."""
+        # Tenta carregar do índice se possível (requer modificação no save/load)
+        # Se não, recria (simplificação para este exemplo)
+        if self.all_chunks is None:
+            print("Chunks não estão na memória. Recriando do PDF (simplificação)...")
+            self._create_index(embeddings) # Recria índice e chunks
 
     def _create_index(self, embeddings):
         """Método interno para criar o índice de um PDF"""
@@ -249,24 +271,23 @@ class ChatWithPDF:
             keep_separator=True
         )
 
-        with LoadingIndicator("Dividindo documento em chunks") as loading:
-            docs = text_splitter.split_documents(documents)
-        
-        print(f"\nDocumento dividido em {len(docs)} chunks")
-        print(f"Tamanho médio dos chunks: {sum(len(doc.page_content) for doc in docs) / len(docs):.1f} caracteres")
+        with LoadingIndicator("Dividindo documento em chunks") as loading:            
+            self.all_chunks =  text_splitter.split_documents(documents)
+        print(f"\nDocumento dividido em {len(self.all_chunks)} chunks")
+        print(f"Tamanho médio dos chunks: {sum(len(doc.page_content) for doc in self.all_chunks) / len(self.all_chunks):.1f} caracteres")
         
         # Mostrar amostra dos chunks para debug
-        if len(docs) > 0:
+        if len(self.all_chunks) > 0:
             print("\nAMOSTRA DE CHUNKS:")
-            for i, doc in enumerate(docs[:3]):  # Mostrar apenas os 3 primeiros chunks
-                print(f"\nChunk {i+1}/{len(docs)} - {len(doc.page_content)} caracteres:")
+            for i, doc in enumerate(self.all_chunks[:3]):  # Mostrar apenas os 3 primeiros chunks
+                print(f"\nChunk {i+1}/{len(self.all_chunks)} - {len(doc.page_content)} caracteres:")
                 print(f"{doc.page_content[:150]}...")
-            if len(docs) > 3:
-                print(f"... e mais {len(docs) - 3} chunks")
+            if len(self.all_chunks) > 3:
+                print(f"... e mais {len(self.all_chunks) - 3} chunks")
 
         print(f"\nCriando embeddings e índice FAISS...")
         with LoadingIndicator("Criando vetores e índice") as loading:
-            self.vector_store = FAISS.from_documents(docs, embeddings)
+            self.vector_store = FAISS.from_documents(self.all_chunks, embeddings)
             if not os.path.exists(self.index_path):
                 os.makedirs(self.index_path)
             self.vector_store.save_local(self.index_path)
@@ -328,7 +349,7 @@ class ChatWithPDF:
             return self.retriever.invoke(query)
 
     def ask_optimized(self, question):
-        """Método otimizado para consultar o documento com base em uma pergunta"""
+        """Método otimizado com busca híbrida: Vetorial + Threshold -> BM25 -> LLM"""
         if question in self.response_cache:
             print("Resposta encontrada no cache!")
             return self.response_cache[question]
@@ -346,20 +367,79 @@ class ChatWithPDF:
                 # Monitorar tempo de recuperação
                 retrieval_start = time.time()
                 
+                # --- PASSO 1: Busca Vetorial Inicial Ampla ---
+                print(f"\n[Busca Híbrida Passo 1/3] Buscando {self.initial_vector_k} candidatos vetoriais...")
+                
                 # Usar estratégia de recuperação aprimorada para consultas complexas
-                docs = self.get_enhanced_context(question)
+                #docs = self.get_enhanced_context(question)
                 # Paramos o indicador de loading antes de continuar com o output
+                
+                # Usamos similarity_search_with_score para obter a distância (score)
+                # FAISS usa L2 distance por padrão (menor é melhor)
+                initial_results_with_scores = self.vector_store.similarity_search_with_score(
+                    question,
+                    k=self.initial_vector_k
+                )
+                print(f" Encontrados {len(initial_results_with_scores)} candidatos iniciais.")
+                
+                
+                # --- PASSO 2: Filtragem por Threshold de Distância ---
+                print(f"[Busca Híbrida Passo 2/3] Filtrando por distância < {self.vector_distance_threshold}...")
+                filtered_docs = []
+                for doc, score in initial_results_with_scores:
+                    if score < self.vector_distance_threshold:
+                        # Guarda o documento e o score para possível uso/log
+                        doc.metadata['vector_score'] = score
+                        filtered_docs.append(doc)
+                    # Opcional: parar se já tiver muitos documentos filtrados?
+
+                print(f" {len(filtered_docs)} documentos passaram no threshold.")
+
+                if not filtered_docs:
+                    loading.stop()
+                    print("ALERTA: Nenhum documento relevante encontrado dentro do threshold de similaridade vetorial.")
+                    # Fallback: talvez usar os top N vetoriais sem threshold? Ou retornar mensagem?
+                    # return "Não foram encontrados documentos relevantes no escopo inicial para esta pergunta."
+                    # Usando um fallback simples: pegar os top K vetoriais diretos
+                    print("Fallback: Usando os top 3 resultados vetoriais diretos.")
+                    vector_retriever_fallback = self.vector_store.as_retriever(search_kwargs={'k': 6})
+                    final_docs = vector_retriever_fallback.get_relevant_documents(question)
+                    if not final_docs:
+                        return "Não foram encontrados documentos relevantes para esta pergunta (mesmo com fallback)."
+
+                else:
+                    # --- PASSO 3: Busca Lexical BM25 nos Documentos Filtrados ---
+                    print(f"[Busca Híbrida Passo 3/3] Aplicando BM25 nos {len(filtered_docs)} documentos filtrados...")
+                    # Garante que k não seja maior que o número de documentos disponíveis
+                    current_bm25_k = min(self.final_bm25_k, len(filtered_docs))
+
+                    if current_bm25_k > 0:
+                        # Cria um retriever BM25 *apenas* com os documentos filtrados
+                        bm25_retriever = BM25Retriever.from_documents(
+                            filtered_docs,
+                            k=current_bm25_k # Define o k para o BM25
+                        )
+                        # Realiza a busca BM25 sobre os documentos filtrados
+                        final_docs = bm25_retriever.get_relevant_documents(question)
+                        print(f" Selecionados top {len(final_docs)} documentos via BM25.")
+                    else:
+                        # Caso raro onde filtered_docs existe mas k=0 (não deveria acontecer com k>0)
+                        final_docs = []
+                        print(" Nenhum documento selecionado pelo BM25 (k=0 ou lista vazia).")
+
+
+                # Parar loading antes de formatar e gerar
                 loading.stop()
                 
                 retrieval_time = time.time() - retrieval_start
-                print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(docs)} documentos encontrados")
+                print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(final_docs)} documentos encontrados")
                 
-                if not docs:
+                if not final_docs:
                     print("ALERTA: Nenhum documento relevante encontrado")
                     return "Não foram encontrados documentos relevantes para essa pergunta."
 
                 # Formatar os documentos recuperados e criar contexto
-                context = format_docs(docs)
+                context = format_docs(final_docs)
                 context_size = len(context)
                 print(f"Contexto gerado: {context_size} caracteres")
                 
@@ -432,6 +512,8 @@ Resposta:'''
                 
                 if attempt == max_retries - 1:
                     return f"Erro ao processar a pergunta: {str(e)}"
+                print("Tentando novamente...")
+                time.sleep(1) # Pequena pausa antes de tentar novamente
             finally:
                 # Garantir que o indicador de loading seja interrompido em qualquer circunstância
                 if loading.is_running:
@@ -602,9 +684,11 @@ if __name__ == "__main__":
         chat = ChatWithPDF(pdf_path)
 
         print("\n" + "=" * 70)
-        print(f"{'MODO DE CHAT - RESPOSTAS DETALHADAS':^70}")
+        print(f"{'MODO DE CHAT - BUSCA HÍBRIDA':^70}")
         print("=" * 70)
-        print("Digite suas perguntas sobre o documento para obter informações detalhadas.")
+        print("Digite suas perguntas. Usando Vetorial -> Threshold -> BM25.")
+        print("Threshold de Distância Vetorial:", chat.vector_distance_threshold)
+        print("K Final (BM25):", chat.final_bm25_k)
         print("Digite 'sair', 'exit' ou 'quit' para finalizar.")
         print("Digite 'ajuda' ou 'help' para ver sugestões de perguntas.")
 
