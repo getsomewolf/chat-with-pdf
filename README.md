@@ -16,6 +16,8 @@ Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de 
 - **Interface amigável**: Feedback visual durante o processamento através de indicadores de carregamento.
 - **Timeout inteligente**: Evita que o modelo fique preso em processamentos muito longos.
 - **Respostas detalhadas**: Configurado para fornecer informações completas e bem estruturadas.
+- **Decomposição de consultas complexas**: Divide perguntas complexas para melhorar a recuperação de informações.
+- **Diversidade de respostas**: Utiliza Maximum Marginal Relevance (MMR) para oferecer respostas mais abrangentes.
 
 ## Pré-requisitos
 
@@ -104,11 +106,16 @@ Siga os passos abaixo para configurar o ambiente e instalar as dependências nec
 
 Você pode personalizar o comportamento ajustando os seguintes parâmetros no código fonte (`main.py`):
 
-- **Tamanho dos chunks**: Modifique `chunk_size` (padrão: 500 caracteres).
-- **Sobreposição dos chunks**: Ajuste `chunk_overlap` (padrão: 50 caracteres).
-- **Número de documentos recuperados**: Altere o parâmetro `k` no retriever (padrão: 2).
-- **Timeout**: Modifique `timeout_duration` (padrão: 120 segundos).
-- **Parâmetros do Ollama**: Ajuste `temperature`, `max_tokens`, etc., na chamada ao `ollama.chat()`.
+- **Tamanho dos chunks**: Modifique `chunk_size` (padrão: 1000 caracteres).
+- **Sobreposição dos chunks**: Ajuste `chunk_overlap` (padrão: 200 caracteres).
+- **Recuperação de documentos**: O parâmetro `retrieval_k` define quantos documentos serão recuperados (padrão: 3).
+- **Diversidade de resultados**: Ajuste `diversity_lambda` para balancear relevância e diversidade (padrão: 0.25).
+- **Modelo de embeddings**: Utiliza "sentence-transformers/all-mpnet-base-v2" para melhor captura semântica.
+- **Parâmetros do Ollama**: Ajustáveis na chamada `ollama.chat()`:
+  - `temperature`: 0.1 (baixa temperatura para respostas mais determinísticas)
+  - `num_predict`: 2048 (limite de tokens para prever)
+  - `top_k`: 40 (número de tokens mais prováveis a considerar)
+  - `top_p`: 0.9 (probabilidade cumulativa para amostragem de núcleo)
 
 ## Resolução de Problemas
 
@@ -121,10 +128,11 @@ Você pode personalizar o comportamento ajustando os seguintes parâmetros no c�
    - Aumente os recursos de hardware, se possível.
 
 3. **Erros de memória:**
-   - Reduza o número de documentos recuperados (`k`) ou use um modelo menor.
+   - Reduza o número de documentos recuperados (`retrieval_k`) ou use um modelo menor.
 
 4. **Índice corrompido:**
    - Delete o diretório correspondente em `indices/` para recriá-lo.
+   - Alternativamente, defina `force_reindex=True` na classe ChatWithPDF.
 
 ## Contribuições
 
@@ -140,7 +148,3 @@ Este projeto está licenciado sob a licença Apache-2.0 - veja o arquivo LICENSE
 - [Ollama](https://ollama.com/) - Ferramenta para rodar modelos de linguagem localmente.
 - [FAISS](https://github.com/facebookresearch/faiss) - Biblioteca para busca de similaridade eficiente.
 - [Hugging Face](https://huggingface.co/) - Plataforma para modelos de linguagem e embeddings.
-
----
-
-Você pode salvar este conteúdo em um arquivo chamado `README.md` ou qualquer outro nome de sua preferência! Se precisar de ajustes, é só avisar.

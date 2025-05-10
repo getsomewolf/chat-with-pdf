@@ -158,10 +158,11 @@ class ChatWithPDF:
         
         # Configurações de recuperação melhoradas
         self.retrieval_k = 4         # Aumentado para capturar mais contexto potencialmente relevante
+
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
-        self.force_reindex = False
+        self.force_reindex = True
         
         # Configurações para a busca híbrida
         self.initial_vector_k = 50 # K para a busca vetorial inicial (ampla)
