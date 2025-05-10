@@ -18,6 +18,8 @@ huggingface-hub = "*"
 colorama = "*"
 cachetools = "*"
 ollama = "*"
+rapidocr-onnxruntime = "*"
+rank-bm25 = "*"
 
 [dev-packages]
 

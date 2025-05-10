@@ -1,28 +1,31 @@
-from dotenv import load_dotenv
 import os
 import glob
-import time
 import warnings
 import threading
-import sys
 from datetime import datetime
 import shutil
 import cachetools
-import ollama
+from dotenv import load_dotenv
 import re
+import sys  # para Output/LoadingIndicator
+import time  # para sleep e time
+
+# Importar cliente de LLM e construtor de prompt
+from prompt_builder import PromptBuilder
+from llm_client import LLMClient
 
 
 # Ignorar avisos para limpar a saída
 warnings.filterwarnings("ignore")
 
 load_dotenv()
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings as HFEmbeddings
-from langchain_community.vectorstores import FAISS
-from functools import lru_cache # não usado, mas pode ser útil para otimização futura
-
-
+from langchain_core.documents import Document
+from pdf_repository import PDFRepository
+from embeddings_factory import EmbeddingFactory
+from chunk_strategies import ChunkStrategyFactory
+from vector_store_repository import VectorStoreRepository
+from retriever_strategies import HybridRetrieverStrategy
+from event_manager import EventManager, Observer
 
 
 # Definir diretórios do projeto
@@ -60,12 +63,6 @@ def format_docs(docs):
     
     return formatted_text
 
-# Cache para armazenar índices de vectorstore previamente carregados
-_vector_store_cache = {}
-def get_vector_store(index_path, embeddings):
-    if index_path not in _vector_store_cache:
-        _vector_store_cache[index_path] = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
-    return _vector_store_cache[index_path]
 # Classe para mostrar animação de loading
 class LoadingIndicator:
     def __init__(self, message="Processando"):
@@ -128,8 +125,13 @@ def run_with_timeout(func, args=(), kwargs={}, timeout_duration=120):
 
     return result[0], None
 
+# Observer para logging de eventos
+class LoggingObserver(Observer):
+    def update(self, event_type: str, data: dict = None):
+        print(f"[EVENT] {event_type}: {data}")
+
 class ChatWithPDF:
-    def __init__(self, pdf_path):
+    def __init__(self, pdf_path, chunking_mode="both", event_manager: EventManager = None):
         if not os.path.exists(pdf_path):
             pdf_in_dir = os.path.join(PDFS_DIR, os.path.basename(pdf_path))
             if os.path.exists(pdf_in_dir):
@@ -152,15 +154,32 @@ class ChatWithPDF:
         # Configurações de chunking melhoradas
         self.chunk_size = 1000       # Tamanho equilibrado para capturar contexto significativo
         self.chunk_overlap = 200     # Overlap aumentado para manter contexto entre chunks
+        self.chunking_mode = chunking_mode  # 'tokens', 'paragraphs', 'both'
         
         # Configurações de recuperação melhoradas
-        self.retrieval_k = 3         # Aumentado para capturar mais contexto potencialmente relevante
+        self.retrieval_k = 4         # Aumentado para capturar mais contexto potencialmente relevante
+
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
         self.force_reindex = True
         
-        # Inicialização
+        # Configurações para a busca híbrida
+        self.initial_vector_k = 50 # K para a busca vetorial inicial (ampla)
+        self.vector_distance_threshold = 1.0 # Threshold de distância L2 (menor = mais similar). AJUSTAR CONFORME NECESSÁRIO!
+        self.final_bm25_k = 6 # K final após o BM25
+        
+        # Inicialização de componentes desacoplados
+        self.pdf_repo = PDFRepository()
+        self.embedding_model = EmbeddingFactory.get_model("sentence-transformers/all-mpnet-base-v2")
+        self.vs_repo = VectorStoreRepository(storage_path=self.index_path, embeddings=self.embedding_model)
+        self.chunk_strategy = ChunkStrategyFactory.get_strategy(mode=self.chunking_mode, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
+        self.event_manager = event_manager or EventManager()
+        # Configurar LLM client e PromptBuilder
+        self.prompt_builder = PromptBuilder()
+        self.llm_client = LLMClient(model_name="llama3.2", event_manager=self.event_manager, prompt_builder=self.prompt_builder)
+        # emitir evento de inicialização
+        self.event_manager.emit('setup_started', {'pdf_path': self.pdf_path, 'mode': self.chunking_mode})
         self.setup()
 
     def index_exists(self):
@@ -169,20 +188,25 @@ class ChatWithPDF:
     def setup(self):
         print(f"Preparando para processar: {self.pdf_path}")
 
-        with LoadingIndicator("Carregando embeddings") as loading:
-            # Modelo de embeddings mais robusto para melhor captura semântica
-            # Usando um modelo melhor para captura semântica mais precisa
-            embeddings = HFEmbeddings(
-                model_name="sentence-transformers/all-mpnet-base-v2", 
-                show_progress=True
-            )
-            print(f"Modelo de embeddings carregado: sentence-transformers/all-mpnet-base-v2")
+        self.event_manager.emit('setup_started', {'pdf_path': self.pdf_path})
 
-        if self.index_exists() and not self.force_reindex:
+        # Emite evento de embeddings prontos (já carregados via factory)
+        print(f"Modelo de embeddings carregado: {self.embedding_model.model_name}")
+        self.event_manager.emit('embeddings_loaded', {'model': self.embedding_model.model_name})
+
+        # Armazenar todos os chunks para uso posterior no BM25 se necessário recriar índice
+        self.all_chunks = None
+
+        if self.vs_repo.exists() and not self.force_reindex:
             print(f"Índice encontrado para {self.pdf_path}. Carregando índice existente...")
-            with LoadingIndicator("Carregando índice") as loading:
-                self.vector_store = get_vector_store(self.index_path, embeddings)
+            with LoadingIndicator("Carregando índice"):
+                self.vector_store = self.vs_repo.load()
             print(f"Índice carregado com sucesso: {self.index_path}")
+            self.event_manager.emit('index_loaded', {'path': self.index_path})
+            
+            print("Garantindo que os chunks estejam disponíveis para BM25...")
+            self._ensure_chunks_available(self.embedding_model)
+
             
             # Verificar a integridade do índice
             try:
@@ -192,33 +216,68 @@ class ChatWithPDF:
             except Exception as e:
                 print(f"AVISO: Teste de índice falhou: {e}")
                 print("Recriando índice para garantir integridade...")
-                self._create_index(embeddings)
+                self._create_index()
         else:
-            if self.force_reindex and self.index_exists():
+            if self.force_reindex and self.vs_repo.exists():
                 print(f"Forçando recriação do índice conforme solicitado.")
             else:
                 print(f"Nenhum índice encontrado. Processando o PDF e criando novo índice...")
-            self._create_index(embeddings)
+            self.event_manager.emit('index_creation_started', {'path': self.index_path})
+            self._create_index()
 
-        # Configurar o retriever com parâmetros aprimorados
-        print(f"Configurando retriever aprimorado com k={self.retrieval_k} e lambda_mult={self.diversity_lambda}...")
-        self.retriever = self.vector_store.as_retriever(
-            search_type="mmr",  # Usar Maximum Marginal Relevance para melhor diversidade
-            search_kwargs={
-                'k': self.retrieval_k,
-                'lambda_mult': self.diversity_lambda,
-                'fetch_k': self.retrieval_k * 2  # Buscar mais candidatos para selecionar os mais diversos
-            }
+        # Configurar retriever usando Strategy
+        print("Configurando retriever híbrido (Strategy)...")
+        self.retriever_strategy = HybridRetrieverStrategy(
+            vector_store=self.vector_store,
+            threshold=self.vector_distance_threshold,
+            initial_k=self.initial_vector_k,
+            final_k=self.final_bm25_k,
+            documents=self.all_chunks
         )
-        print("Retriever configurado com sucesso!")
+        print("Retriever híbrido configurado com sucesso!")
+        self.event_manager.emit('index_created', {'path': self.index_path})
+        
+    def _ensure_chunks_available(self, embeddings):
+        """Carrega ou gera chunks se não estiverem na memória."""
+        # Tenta carregar do índice se possível (requer modificação no save/load)
+        # Se não, recria (simplificação para este exemplo)
+        if self.all_chunks is None:
+            print("Chunks não estão na memória. Recriando do PDF (simplificação)...")
+            self._create_index(embeddings) # Recria índice e chunks
 
-    def _create_index(self, embeddings):
+    def _clean_text(self, text):
+        """Limpa o texto removendo headers/footers e unindo linhas quebradas."""
+        # Remove headers/footers comuns (exemplo simples, pode ser aprimorado)
+        text = re.sub(r"\n\s*Página \d+\s*\n", "\n", text, flags=re.IGNORECASE)
+        # Une linhas quebradas dentro de parágrafos
+        text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+        # Remove múltiplas quebras de linha
+        text = re.sub(r"\n{2,}", "\n\n", text)
+        return text.strip()
+
+    def _split_by_paragraphs(self, documents):
+        """Divide documentos em parágrafos, mantendo metadados de página/parágrafo."""
+        paragraph_docs = []
+        for doc in documents:
+            page = doc.metadata.get('page', None)
+            # Divide por parágrafos (duas quebras de linha ou fim de linha seguido de maiúscula)
+            paragraphs = re.split(r"\n\n+|(?<=\.)\s*\n(?=[A-ZÁÉÍÓÚÃÕÂÊÎÔÛ])", self._clean_text(doc.page_content))
+            for idx, para in enumerate(paragraphs):
+                para = para.strip()
+                if len(para) > 0:
+                    meta = dict(doc.metadata)
+                    meta['page'] = page
+                    meta['paragraph'] = idx + 1
+                    paragraph_docs.append(Document(page_content=para, metadata=meta))
+        return paragraph_docs
+
+    def _create_index(self):
         """Método interno para criar o índice de um PDF"""
         print(f"Iniciando processamento do PDF: {self.pdf_path}")
-        
+        self.event_manager.emit('index_creation_started', {'path': self.index_path})
+
         with LoadingIndicator("Lendo PDF") as loading:
-            loader = PyPDFLoader(file_path=self.pdf_path)
-            documents = loader.load()
+            documents = self.pdf_repo.load(self.pdf_path)
             
         print(f"\n{'=' * 50}")
         print(f"ESTATÍSTICAS DO DOCUMENTO:")
@@ -240,39 +299,28 @@ class ChatWithPDF:
                 print(f"... e mais {len(documents) - 3} páginas")
                 break
 
-        # Criar um text splitter com configurações aprimoradas
-        print(f"\nConfigurando text splitter avançado: chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            separators=["\n\n", "\n", ". ", " ", ""],  # Mais granularidade na separação
-            keep_separator=True
-        )
+        # Aplicar estratégia de chunking configurada
+        self.all_chunks = self.chunk_strategy.split(documents)
+        for i, doc in enumerate(self.all_chunks):
+            doc.metadata['chunk_index'] = i + 1
+        print(f"Documento dividido em {len(self.all_chunks)} chunks (modo: {self.chunking_mode})")
+        
+        self.event_manager.emit('chunks_split', {'count': len(self.all_chunks), 'mode': self.chunking_mode})
 
-        with LoadingIndicator("Dividindo documento em chunks") as loading:
-            docs = text_splitter.split_documents(documents)
-        
-        print(f"\nDocumento dividido em {len(docs)} chunks")
-        print(f"Tamanho médio dos chunks: {sum(len(doc.page_content) for doc in docs) / len(docs):.1f} caracteres")
-        
         # Mostrar amostra dos chunks para debug
-        if len(docs) > 0:
+        if len(self.all_chunks) > 0:
             print("\nAMOSTRA DE CHUNKS:")
-            for i, doc in enumerate(docs[:3]):  # Mostrar apenas os 3 primeiros chunks
-                print(f"\nChunk {i+1}/{len(docs)} - {len(doc.page_content)} caracteres:")
+            for i, doc in enumerate(self.all_chunks[:3]):  # Mostrar apenas os 3 primeiros chunks
+                print(f"\nChunk {i+1}/{len(self.all_chunks)} - {len(doc.page_content)} caracteres:")
                 print(f"{doc.page_content[:150]}...")
-            if len(docs) > 3:
-                print(f"... e mais {len(docs) - 3} chunks")
+            if len(self.all_chunks) > 3:
+                print(f"... e mais {len(self.all_chunks) - 3} chunks")
 
         print(f"\nCriando embeddings e índice FAISS...")
-        with LoadingIndicator("Criando vetores e índice") as loading:
-            self.vector_store = FAISS.from_documents(docs, embeddings)
-            if not os.path.exists(self.index_path):
-                os.makedirs(self.index_path)
-            self.vector_store.save_local(self.index_path)
-        print(f"Índice FAISS criado e salvo em {self.index_path}")
-        #print(f"Dimensão dos vetores: {self.vector_store.index.d}")
-        #print(f"Número de vetores no índice: {self.vector_store.index.ntotal}")
+        with LoadingIndicator("Criando vetores e índice"):
+            self.vector_store = self.vs_repo.create(self.all_chunks)
+        print(f"Índice criado e salvo em {self.index_path}")
+        self.event_manager.emit('index_created', {'path': self.index_path})
 
     def decompose_complex_query(self, query):
         """Decompõe uma consulta complexa em consultas mais simples para melhorar a recuperação"""
@@ -307,7 +355,7 @@ class ChatWithPDF:
             # Para cada subconsulta, recuperar documentos relevantes
             for sub_q in sub_queries:
                 print(f"\nBuscando por: '{sub_q}'")
-                sub_docs = self.retriever.get_relevant_documents(sub_q)
+                sub_docs = self.retriever.invoke(sub_q)
                 print(f"  Encontrados {len(sub_docs)} documentos relevantes")
                 all_docs.extend(sub_docs)
             
@@ -325,10 +373,43 @@ class ChatWithPDF:
         else:
             # Para consultas simples, usar o método padrão
             print("Usando método de recuperação padrão para consulta simples")
-            return self.retriever.get_relevant_documents(query)
+            return self.retriever.invoke(query)
+
+    def get_enhanced_context(self, query):
+        """Obtém um contexto aprimorado para consultas complexas"""
+        sub_queries = self.decompose_complex_query(query)
+        
+        if len(sub_queries) > 1:
+            print(f"Consulta dividida em {len(sub_queries)} partes para busca individualizada:")
+            for i, sub_q in enumerate(sub_queries):
+                print(f"  {i+1}. '{sub_q}'")
+            
+            all_docs = []
+            # Para cada subconsulta, recuperar documentos relevantes
+            for sub_q in sub_queries:
+                print(f"\nBuscando por: '{sub_q}'")
+                sub_docs = self.retriever.invoke(sub_q)
+                print(f"  Encontrados {len(sub_docs)} documentos relevantes")
+                all_docs.extend(sub_docs)
+            
+            # Remover duplicatas mantendo a ordem
+            unique_docs = []
+            seen_content = set()
+            for doc in all_docs:
+                content_hash = hash(doc.page_content)
+                if content_hash not in seen_content:
+                    seen_content.add(content_hash)
+                    unique_docs.append(doc)
+            
+            print(f"Total de {len(unique_docs)} documentos únicos recuperados após remoção de duplicatas")
+            return unique_docs
+        else:
+            # Para consultas simples, usar o método padrão
+            print("Usando método de recuperação padrão para consulta simples")
+            return self.retriever.invoke(query)
 
     def ask_optimized(self, question):
-        """Método otimizado para consultar o documento com base em uma pergunta"""
+        """Método otimizado com busca híbrida: Vetorial + Threshold -> BM25 -> LLM"""
         if question in self.response_cache:
             print("Resposta encontrada no cache!")
             return self.response_cache[question]
@@ -346,20 +427,24 @@ class ChatWithPDF:
                 # Monitorar tempo de recuperação
                 retrieval_start = time.time()
                 
-                # Usar estratégia de recuperação aprimorada para consultas complexas
-                docs = self.get_enhanced_context(question)
-                # Paramos o indicador de loading antes de continuar com o output
+                self.event_manager.emit('retrieval_started', {'question': question})
+
+                # Recuperar documentos usando a estratégia configurada
+                final_docs = self.retriever_strategy.retrieve(question)
+
                 loading.stop()
                 
                 retrieval_time = time.time() - retrieval_start
-                print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(docs)} documentos encontrados")
+                print(f"Recuperação concluída em {retrieval_time:.2f}s - {len(final_docs)} documentos encontrados")
                 
-                if not docs:
+                self.event_manager.emit('retrieval_completed', {'count': len(final_docs), 'time': retrieval_time})
+
+                if not final_docs:
                     print("ALERTA: Nenhum documento relevante encontrado")
                     return "Não foram encontrados documentos relevantes para essa pergunta."
 
                 # Formatar os documentos recuperados e criar contexto
-                context = format_docs(docs)
+                context = format_docs(final_docs)
                 context_size = len(context)
                 print(f"Contexto gerado: {context_size} caracteres")
                 
@@ -369,52 +454,14 @@ class ChatWithPDF:
                 # Monitorar tempo de geração da resposta
                 generation_start = time.time()
                 
-                # Usar Ollama para gerar a resposta
-                print("Enviando consulta para o modelo Ollama...")
-                stream = ollama.chat(
-                    model="llama3.2", 
-                    messages=[
-                        {   
-                            'role': 'user',
-                            'content': f'''Você é um assistente de QA especializado em responder perguntas com base em documentos. 
-Sua tarefa é fornecer respostas completas e precisas, sempre citando a fonte das informações com base no contexto fornecido.
-Considere todas as partes da pergunta e certifique-se de responder a cada aspecto.
-Use trechos diretos do contexto quando possível e indique claramente de onde a informação foi extraída.
-Se apenas uma parte da resposta estiver disponível no contexto, forneça o que for possível encontrar e indique o que está faltando.
-Se a resposta não estiver presente no contexto, diga "Não foi possível encontrar informações suficientes no documento citado para responder a essa pergunta" e não invente informações.
+                self.event_manager.emit('generation_started', {})
 
-Contexto: {context}
-
-Pergunta: {question}
-
-Resposta:'''
-                        },
-                    ],
-                    stream=True, 
-                    options={
-                        "temperature": 0.1,  # Baixa temperatura para respostas mais determinísticas
-                        "num_predict": 2048,  # Limite de tokens para prever
-                        "top_k": 40,         # Número de tokens mais prováveis a considerar
-                        "top_p": 0.9         # Probabilidade cumulativa para amostragem de núcleo
-                    }
-                )
-                
-                # Processar os chunks da resposta
-                answer = ""          
-                # Linha completamente limpa antes de iniciar a resposta
-                print("\nGerando resposta:", end='', flush=True)
-                
-                for chunk in stream:
-                    content = chunk['message']['content']
-                    answer += content  # Concatenar para formar a resposta completa
-                    print(content, end='', flush=True)  # Imprimir cada chunk em tempo real
-                
-                # Finalizar com informações sobre o tempo
-                generation_time = time.time() - generation_start
-                print(f"\n\nResposta gerada em {generation_time:.2f}s")
-                
+                # Gerar resposta usando LLMClient
+                print("Gerando resposta via LLMClient...")
+                answer = self.llm_client.generate(context, question)
                 # Salvar no cache para consultas futuras
                 self.response_cache[question] = answer
+                print(answer)
                 return answer
 
             except Exception as e:
@@ -426,6 +473,8 @@ Resposta:'''
                 
                 if attempt == max_retries - 1:
                     return f"Erro ao processar a pergunta: {str(e)}"
+                print("Tentando novamente...")
+                time.sleep(1) # Pequena pausa antes de tentar novamente
             finally:
                 # Garantir que o indicador de loading seja interrompido em qualquer circunstância
                 if loading.is_running:
@@ -570,7 +619,7 @@ def verify_workspace_integrity():
         
     # Verificar Ollama
     try:
-        import ollama
+        import ollama  # type: ignore
         print("Biblioteca Ollama encontrada")
     except ImportError:
         print("ALERTA: Biblioteca Ollama não encontrada!")
@@ -593,12 +642,28 @@ if __name__ == "__main__":
         exit()
 
     try:
-        chat = ChatWithPDF(pdf_path)
+        # Permitir escolha do modo de chunking
+        print("\nEscolha o modo de chunking:")
+        print("1. Tokens com overlap (padrão)")
+        print("2. Parágrafos/seções")
+        print("3. Ambos (parágrafo + tokens, recomendado)")
+        chunk_mode_input = input("Digite 1, 2 ou 3 [3]: ").strip()
+        chunking_mode = {"1": "tokens", "2": "paragraphs", "3": "both"}.get(chunk_mode_input, "both")
+
+        # configurar event manager e observer
+        event_manager = EventManager()
+        logger = LoggingObserver()
+        for ev in ['setup_started','embeddings_loaded','index_loaded','index_creation_started','chunks_split','index_created','retrieval_started','retrieval_completed','generation_started','generation_completed']:
+            event_manager.subscribe(ev, logger)
+
+        chat = ChatWithPDF(pdf_path, chunking_mode=chunking_mode, event_manager=event_manager)
 
         print("\n" + "=" * 70)
-        print(f"{'MODO DE CHAT - RESPOSTAS DETALHADAS':^70}")
+        print(f"{'MODO DE CHAT - BUSCA HÍBRIDA':^70}")
         print("=" * 70)
-        print("Digite suas perguntas sobre o documento para obter informações detalhadas.")
+        print("Digite suas perguntas. Usando Vetorial -> Threshold -> BM25.")
+        print("Threshold de Distância Vetorial:", chat.vector_distance_threshold)
+        print("K Final (BM25):", chat.final_bm25_k)
         print("Digite 'sair', 'exit' ou 'quit' para finalizar.")
         print("Digite 'ajuda' ou 'help' para ver sugestões de perguntas.")
 
