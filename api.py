@@ -1,56 +1,296 @@
 # filepath: c:\Users\lucas\Projects\chat-with-pdf\api.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import os
+import asyncio
+import json
+from typing import Dict, Tuple, AsyncGenerator
 
-from main import ChatWithPDF, PDFS_DIR, INDICES_DIR, EventManager, LoggingObserver, format_docs_for_api
+from config import settings
+from services import IndexService, QueryService
+from event_manager import EventManager
+from observers import LoggingObserver
+from prompt_builder import PromptBuilder
+from llm_client import LLMClient
+from embeddings_factory import EmbeddingFactory # For direct use if needed, though services encapsulate
+from pdf_repository import PDFRepository
+from vector_store_repository import VectorStoreRepository
+from chunk_strategies import ChunkStrategyFactory
 
-app = FastAPI(title="Chat with PDF API", version="1.0")
-chat_instances: dict[str, ChatWithPDF] = {}
+import logging
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="Chat with PDF API",
+    version="1.1",
+    description="API for uploading PDFs and asking questions about their content."
+)
+
+# Global cache for service instances, keyed by PDF filename (basename)
+# This is a simple in-memory cache. For production, consider a more robust solution
+# or manage service lifecycles with FastAPI dependencies if appropriate.
+service_instances_cache: Dict[str, Tuple[IndexService, QueryService]] = {}
+
+# Setup global event manager and logger for API context
 api_event_manager = EventManager()
-api_logger = LoggingObserver()
-for ev in ['chat_with_pdf_initialized','retrieval_started','retrieval_completed','generation_started','generation_completed']:
-    api_event_manager.subscribe(ev, api_logger)
+api_logger = LoggingObserver() # Using the general LoggingObserver
+event_types_to_log = [
+    'index_setup_started', 'index_loaded', 'index_creation_started', 'chunks_split', 
+    'index_created', 'index_setup_completed', 'retrieval_started', 'retrieval_completed', 
+    'generation_started', 'generation_completed', 'generation_failed', 'api_upload_request',
+    'api_ask_request'
+]
+for ev_type in event_types_to_log:
+    api_event_manager.subscribe(ev_type, api_logger)
+
+# --- Pydantic Models ---
+class UploadResponse(BaseModel):
+    message: str
+    pdf_filename: str
+    index_status: str
 
 class QuestionRequest(BaseModel):
-    pdf_filename: str
+    pdf_filename: str # Basename of the PDF, e.g., "mydoc.pdf"
     question: str
 
+# SSE Stream Event Model (conceptual, not directly used by Pydantic for StreamingResponse)
+# class SSEEvent(BaseModel):
+#     event: str
+#     data: str # JSON stringified data
+
+# --- Helper Function to Get or Create Services ---
+async def get_or_create_services(pdf_filename_basename: str, force_reindex: bool = False) -> Tuple[IndexService, QueryService]:
+    if pdf_filename_basename in service_instances_cache and not force_reindex:
+        logger.info(f"Using cached services for {pdf_filename_basename}")
+        # Potentially re-validate if index still exists or needs refresh if not forcing
+        # For simplicity, we return cached if not forcing reindex.
+        # A more robust check might involve IndexService.is_valid() or similar.
+        return service_instances_cache[pdf_filename_basename]
+
+    # Path to the PDF within the managed PDFS_DIR
+    pdf_path_in_managed_dir = os.path.join(settings.PDFS_DIR, pdf_filename_basename)
+    if not os.path.exists(pdf_path_in_managed_dir) and not force_reindex: # if force_reindex, upload will place it
+        # This case happens if /ask is called for a PDF that was never uploaded or its file is gone
+         raise FileNotFoundError(f"PDF file {pdf_filename_basename} not found in managed directory: {settings.PDFS_DIR}")
+
+
+    # Create new instances
+    logger.info(f"Creating new service instances for {pdf_filename_basename}. Force reindex: {force_reindex}")
+    
+    # IndexService needs the original path or the path it will be copied to.
+    # If force_reindex is true, it's typically an upload, so pdf_path_in_managed_dir is the target.
+    # If not force_reindex, it's a query, so pdf_path_in_managed_dir must exist.
+    index_service = IndexService(
+        pdf_path=pdf_path_in_managed_dir, # IndexService handles ensuring it's in PDFS_DIR
+        event_manager=api_event_manager,
+        force_reindex=force_reindex 
+    )
+    await index_service.initialize_index() # This loads or creates the index
+
+    vector_store = index_service.get_vector_store()
+    all_chunks = index_service.get_all_chunks()
+
+    if not vector_store or not all_chunks:
+        # This indicates a problem during index initialization
+        logger.error(f"Failed to obtain vector_store or all_chunks for {pdf_filename_basename} after initialization.")
+        raise HTTPException(status_code=500, detail=f"Index initialization failed for {pdf_filename_basename}. Cannot create QueryService.")
+
+    prompt_builder = PromptBuilder()
+    llm_client = LLMClient(event_manager=api_event_manager, prompt_builder=prompt_builder)
+    
+    query_service = QueryService(
+        vector_store=vector_store,
+        all_chunks=all_chunks,
+        event_manager=api_event_manager,
+        prompt_builder=prompt_builder,
+        llm_client=llm_client
+    )
+    
+    service_instances_cache[pdf_filename_basename] = (index_service, query_service)
+    return index_service, query_service
+
+# --- API Endpoints ---
+@app.post("/upload-pdf/", response_model=UploadResponse)
+async def upload_pdf(file: UploadFile = File(...)):
+    api_event_manager.emit('api_upload_request', {'filename': file.filename, 'content_type': file.content_type})
+    
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are allowed.")
+
+    # Size check
+    max_size_bytes = settings.API_PDF_MAX_SIZE_MB * 1024 * 1024
+    file_size = 0
+    # Read chunks to determine size without loading whole file into memory at once if too large
+    # However, UploadFile.file is a SpooledTemporaryFile, it might already be in memory or on disk
+    # A more robust way for very large files might involve streaming the file and checking size progressively.
+    # For now, we seek to end and tell.
+    await file.seek(0, 2) # Move to end of file
+    file_size = await file.tell() # Get size
+    await file.seek(0) # Reset to start for reading
+
+    if file_size > max_size_bytes:
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size is {settings.API_PDF_MAX_SIZE_MB}MB. Provided: {file_size / (1024*1024):.2f}MB"
+        )
+
+    pdf_target_path = os.path.join(settings.PDFS_DIR, file.filename)
+    
+    try:
+        # Save the uploaded PDF to the PDFS_DIR
+        with open(pdf_target_path, "wb") as buffer:
+            buffer.write(await file.read())
+        logger.info(f"PDF '{file.filename}' uploaded and saved to '{pdf_target_path}'")
+    except Exception as e:
+        logger.error(f"Error saving uploaded PDF '{file.filename}': {e}")
+        raise HTTPException(status_code=500, detail=f"Could not save PDF: {str(e)}")
+    finally:
+        await file.close()
+
+    try:
+        # Initialize services with force_reindex=True for the uploaded PDF
+        # This will create/update the index.
+        # The IndexService constructor now handles copying to PDFS_DIR if it wasn't already there.
+        # Since we saved it directly to pdf_target_path, it's already in PDFS_DIR.
+        index_service, _ = await get_or_create_services(file.filename, force_reindex=True)
+        
+        # Ensure index is actually created/updated
+        # initialize_index is called within get_or_create_services if new/forced
+        # If we want to be absolutely sure, we can call it again, but it should be redundant.
+        # await index_service.initialize_index() 
+
+        status_message = "PDF processed and index created/updated successfully."
+        index_status = "Indexed"
+        if not index_service.get_vector_store() or not index_service.get_all_chunks():
+            status_message = "PDF uploaded, but index creation might have issues. Check logs."
+            index_status = "Indexing Error"
+            logger.error(f"Index seems problematic for {file.filename} after processing upload.")
+
+
+        return UploadResponse(
+            message=status_message,
+            pdf_filename=file.filename,
+            index_status=index_status
+        )
+    except FileNotFoundError as fnf: # Should be caught by get_or_create_services if PDF disappears
+        logger.error(f"FileNotFoundError during upload processing for {file.filename}: {fnf}")
+        raise HTTPException(status_code=404, detail=str(fnf))
+    except Exception as e:
+        logger.error(f"Error processing PDF '{file.filename}' after upload: {e}", exc_info=True)
+        # Clean up the uploaded file if processing fails catastrophically
+        if os.path.exists(pdf_target_path):
+            # os.remove(pdf_target_path) # Or quarantine it
+            logger.info(f"Uploaded PDF {pdf_target_path} kept despite processing error for debugging.")
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+
+
+async def stream_answer_events(pdf_filename: str, question: str) -> AsyncGenerator[str, None]:
+    """Generates Server-Sent Events (SSE) for the /ask endpoint."""
+    try:
+        _, query_service = await get_or_create_services(pdf_filename, force_reindex=False)
+    except FileNotFoundError:
+        event_data = json.dumps({"error": f"PDF '{pdf_filename}' not found or not processed. Please upload it first."})
+        yield f"event: error\ndata: {event_data}\n\n"
+        return
+    except Exception as e:
+        logger.error(f"Failed to get services for {pdf_filename} during ask: {e}", exc_info=True)
+        event_data = json.dumps({"error": f"Internal server error while preparing for your question: {str(e)}"})
+        yield f"event: error\ndata: {event_data}\n\n"
+        return
+
+    try:
+        async for event_type, data in query_service.answer_question_streaming(question):
+            if event_type == "text_chunk":
+                event_data = json.dumps({"chunk": data.get("chunk", "")})
+                yield f"event: text_chunk\ndata: {event_data}\n\n"
+            elif event_type == "sources":
+                event_data = json.dumps({"sources": data.get("sources", [])})
+                yield f"event: sources\ndata: {event_data}\n\n"
+            elif event_type == "error": # If QueryService itself yields an error event
+                event_data = json.dumps({"error": data.get("error", "An unknown error occurred during generation.")})
+                yield f"event: error\ndata: {event_data}\n\n"
+            await asyncio.sleep(0.01) # Small sleep to allow other tasks, adjust as needed
+    except Exception as e:
+        logger.error(f"Error during answer streaming for '{question}' on '{pdf_filename}': {e}", exc_info=True)
+        event_data = json.dumps({"error": f"An error occurred while generating the answer: {str(e)}"})
+        yield f"event: error\ndata: {event_data}\n\n"
+    finally:
+        # Signal end of stream (optional, client can also detect close)
+        event_data = json.dumps({"message": "Stream ended."})
+        yield f"event: end_stream\ndata: {event_data}\n\n"
+
+
+@app.post("/ask") # Changed to POST to accept JSON body
+async def ask_question(request: QuestionRequest):
+    api_event_manager.emit('api_ask_request', {'pdf_filename': request.pdf_filename, 'question': request.question})
+    
+    if not request.pdf_filename or not request.question:
+        raise HTTPException(status_code=400, detail="pdf_filename and question are required.")
+
+    # Check if the PDF (and thus its index) should exist
+    # This check is now implicitly handled by get_or_create_services
+    # pdf_managed_path = os.path.join(settings.PDFS_DIR, request.pdf_filename)
+    # if not os.path.exists(pdf_managed_path):
+    #    raise HTTPException(status_code=404, detail=f"PDF '{request.pdf_filename}' not found. Please upload it first.")
+    # index_path = os.path.join(settings.INDICES_DIR, f"index_{request.pdf_filename.split('.')[0]}")
+    # if not (os.path.exists(index_path) and os.listdir(index_path)):
+    #    raise HTTPException(status_code=404, detail=f"Index for PDF '{request.pdf_filename}' not found. Please ensure it's processed.")
+
+    return StreamingResponse(
+        stream_answer_events(request.pdf_filename, request.question),
+        media_type="text/event-stream"
+    )
+
+# Example of a non-streaming endpoint (can be removed if only streaming is desired)
 class AnswerResponse(BaseModel):
     answer: str
     sources: list[str] = []
-    cached_response: bool = False
+    cached_response: bool = False # Kept for consistency if non-streaming is used
 
-
-def get_chat_instance(pdf_filename: str) -> ChatWithPDF:
-    if pdf_filename in chat_instances:
-        return chat_instances[pdf_filename]
-    pdf_path = os.path.join(PDFS_DIR, pdf_filename)
-    if not os.path.exists(pdf_path):
-        if not os.path.exists(pdf_filename):
-            raise FileNotFoundError(f"PDF not found: {pdf_filename}")
-        pdf_path = pdf_filename
-    instance = ChatWithPDF(pdf_path, event_manager=api_event_manager)
-    chat_instances[pdf_filename] = instance
-    return instance
-
-
-@app.post("/ask", response_model=AnswerResponse)
-def ask(request: QuestionRequest):
+@app.post("/ask-non-streaming", response_model=AnswerResponse, deprecated=True)
+async def ask_question_non_streaming(request: QuestionRequest):
+    api_event_manager.emit('api_ask_request_non_streaming', {'pdf_filename': request.pdf_filename, 'question': request.question})
     try:
-        chat = get_chat_instance(request.pdf_filename)
-        data = chat.ask_for_api(request.question)
-        return AnswerResponse(answer=data['answer'], sources=data['sources'], cached_response=data.get('cached', False))
+        _, query_service = await get_or_create_services(request.pdf_filename, force_reindex=False)
+        
+        # Check cache first (QueryService handles its internal cache)
+        cached_q = query_service.response_cache.get(request.question)
+        if cached_q and isinstance(cached_q, dict) and 'final_answer' in cached_q:
+             return AnswerResponse(
+                answer=cached_q['final_answer'], 
+                sources=cached_q['sources'], 
+                cached_response=True
+            )
+
+        answer, sources = await query_service.answer_question_non_streaming(request.question)
+        return AnswerResponse(answer=answer, sources=sources, cached_response=False)
     except FileNotFoundError as fnf:
         raise HTTPException(status_code=404, detail=str(fnf))
-    except ValueError as ve:
+    except ValueError as ve: # Catch other specific errors if QueryService raises them
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Generic error in /ask-non-streaming for {request.pdf_filename}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    os.makedirs(PDFS_DIR, exist_ok=True)
-    os.makedirs(INDICES_DIR, exist_ok=True)
-    uvicorn.run("api:app", host="0.0.0.0", port=8000)
+    # Ensure directories from settings are created (config.py does this on import)
+    # os.makedirs(settings.PDFS_DIR, exist_ok=True)
+    # os.makedirs(settings.INDICES_DIR, exist_ok=True)
+    
+    logger.info(f"Starting Uvicorn server on {settings.UVICORN_HOST}:{settings.UVICORN_PORT}")
+    logger.info(f"PDFs will be stored in: {os.path.abspath(settings.PDFS_DIR)}")
+    logger.info(f"Indices will be stored in: {os.path.abspath(settings.INDICES_DIR)}")
+    logger.info(f"Ollama server expected at: {settings.OLLAMA_HOST}")
+    
+    uvicorn.run(
+        "api:app", 
+        host=settings.UVICORN_HOST, 
+        port=settings.UVICORN_PORT, 
+        reload=True, # For development
+        timeout_keep_alive=settings.UVICORN_TIMEOUT_KEEP_ALIVE
+    )

@@ -1,150 +1,202 @@
-# Chat com PDF - Aplicação de Consulta a Documentos PDF
+# Chat com PDF - Aplicação de Consulta a Documentos PDF (Refatorado)
 
-Uma aplicação de linha de comando que permite conversar com seus documentos PDF utilizando um modelo de linguagem local.
+Uma aplicação Python com CLI e API FastAPI que permite conversar com seus documentos PDF utilizando um modelo de linguagem local.
 
 > **ATENÇÃO:** Este projeto está em desenvolvimento e pode conter "bugs". Fique à vontade para testar!
 
 ## Descrição
 
-Chat com PDF é uma ferramenta que permite fazer perguntas sobre o conteúdo de documentos PDF e receber respostas detalhadas, sem depender de serviços externos como OpenAI ou outros provedores de API. A aplicação utiliza um modelo de linguagem local (LLM) através do `ollama` para processar as consultas e gerar respostas contextualizadas baseadas no conteúdo do documento.
+Chat com PDF é uma ferramenta que permite fazer upload de documentos PDF (via API) e fazer perguntas sobre seu conteúdo (via API ou CLI), recebendo respostas detalhadas. A aplicação utiliza um modelo de linguagem local (LLM) através do `ollama` para processar as consultas e gerar respostas contextualizadas.
 
-## Características
+## Características Principais
 
-- **Processamento local**: Todas as operações são realizadas localmente, sem necessidade de conexão à internet após o download do modelo.
-- **Independência de APIs externas**: Não requer chaves de API ou serviços pagos.
-- **Organização automática**: Os PDFs e índices são organizados em pastas dedicadas.
-- **Interface amigável**: Feedback visual durante o processamento através de indicadores de carregamento.
-- **Timeout inteligente**: Evita que o modelo fique preso em processamentos muito longos.
-- **Respostas detalhadas**: Configurado para fornecer informações completas e bem estruturadas.
-- **Decomposição de consultas complexas**: Divide perguntas complexas para melhorar a recuperação de informações.
-- **Diversidade de respostas**: Utiliza Maximum Marginal Relevance (MMR) para oferecer respostas mais abrangentes.
+- **Processamento local**: Todas as operações são realizadas localmente (requer Ollama rodando).
+- **API FastAPI**:
+    - Endpoint para upload de PDFs (`/upload-pdf/`) com validação de tamanho.
+    - Endpoint de consulta (`/ask`) com **respostas via streaming (Server-Sent Events)**.
+    - Gerenciamento de configuração via variáveis de ambiente (`.env` file).
+- **Interface de Linha de Comando (CLI)**: Funcionalidade mantida para interação local.
+- **Arquitetura Refatorada**:
+    - Uso de Princípio da Responsabilidade Única (SRP) com `IndexService` e `QueryService`.
+    - Injeção de Dependência para melhor testabilidade.
+    - Operações assíncronas (`async/await`) na API e no cliente LLM.
+- **Organização automática**: PDFs e índices são organizados em pastas dedicadas (`pdfs/`, `indices/`).
+- **Cache de Respostas**: Para otimizar consultas repetidas.
+- **Testes**: Inclui estrutura para testes unitários e de integração com `pytest`.
 
 ## Pré-requisitos
 
-- Python 3.9 ou superior
-- Espaço em disco para armazenar o modelo de linguagem (aproximadamente 4-7GB)
-- Pelo menos 8GB de RAM (16GB recomendado)
+- Python 3.10 ou superior
+- Docker (opcional, para rodar em container)
+- Ollama instalado e rodando (com um modelo como `llama3.2` baixado)
+- Espaço em disco para armazenar modelos de linguagem, PDFs e índices.
+- Pelo menos 8GB de RAM (16GB recomendado).
 
 ## Instalação
 
-Siga os passos abaixo para configurar o ambiente e instalar as dependências necessárias:
+1.  **Clone este repositório:**
+    ```bash
+    git clone https://github.com/getsomewolf/chat-with-pdf.git
+    cd chat-with-pdf
+    ```
 
-1. **Clone este repositório ou baixe os arquivos:**
+2.  **Crie e configure o arquivo de ambiente:**
+    Copie o arquivo `.env.example` para `.env` e ajuste as configurações conforme necessário (especialmente `OLLAMA_HOST` se o Ollama não estiver rodando em `http://localhost:11434`).
+    ```bash
+    cp .env.example .env
+    # Edite .env com suas configurações
+    ```
 
-   ```bash
-   git clone https://github.com/getsomewolf/chat-with-pdf.git
-   cd chat-with-pdf
-   ```
+3.  **Instale o Pipenv** (se ainda não estiver instalado):
+    ```bash
+    pip install pipenv
+    ```
 
-2. **Instale o Pipenv**, se ainda não estiver instalado:
+4.  **Instale as dependências** usando Pipenv:
+    ```bash
+    pipenv install --dev # Instala dependências de produção e desenvolvimento (para testes)
+    ```
+    Isso criará um ambiente virtual e instalará todas as dependências.
 
-   ```bash
-   pip install pipenv
-   ```
-
-3. **Instale as dependências** usando o Pipenv:
-
-   ```bash
-   pipenv install
-   ```
-
-   Isso criará um ambiente virtual e instalará todas as dependências listadas no Pipfile, incluindo o `ollama`.
-
-4. **Instale o Ollama**:
-
-   - Visite o [site oficial do Ollama](https://ollama.com/) e siga as instruções para instalar o Ollama no seu sistema operacional.
-   - Após a instalação, baixe um modelo de linguagem. Recomendamos o modelo `llama3.2`, mas você pode escolher outro modelo compatível:
-
-     ```bash
-     ollama pull llama3.2
-     ```
-
-5. **Certifique-se de que o Ollama está rodando**:
-
-   - Inicie o servidor do Ollama em um terminal separado:
-
-     ```bash
-     ollama serve
-     ```
-
-   - Mantenha este terminal aberto enquanto usa o Chat com PDF.
+5.  **Instale e configure o Ollama**:
+    - Visite o [site oficial do Ollama](https://ollama.com/) e siga as instruções.
+    - Baixe um modelo (ex: `llama3.2`):
+      ```bash
+      ollama pull llama3.2
+      ```
+    - Certifique-se que o servidor Ollama está rodando. Por padrão, ele escuta em `http://localhost:11434`.
+      ```bash
+      ollama serve
+      ```
+      (Mantenha este terminal aberto ou execute como serviço).
 
 ## Uso
 
-1. **Ative o ambiente virtual do Pipenv:**
+### API FastAPI
 
-   ```bash
-   pipenv shell
-   ```
+1.  **Ative o ambiente virtual:**
+    ```bash
+    pipenv shell
+    ```
 
-2. **Execute o aplicativo:**
+2.  **Inicie o servidor da API:**
+    ```bash
+    python api.py
+    ```
+    Ou usando Uvicorn diretamente para mais opções (ex: workers):
+    ```bash
+    uvicorn api:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 120
+    ```
+    A API estará disponível em `http://localhost:8000` (ou conforme configurado).
+    A documentação interativa (Swagger UI) estará em `http://localhost:8000/docs`.
 
-   ```bash
-   python main.py
-   ```
+3.  **Endpoints da API:**
+    - `POST /upload-pdf/`: Faça upload de um arquivo PDF.
+      - `multipart/form-data` com um campo `file`.
+    - `POST /ask`: Faça uma pergunta sobre um PDF processado.
+      - Corpo JSON: `{"pdf_filename": "nome_do_arquivo.pdf", "question": "Sua pergunta aqui"}`
+      - A resposta é um stream de Server-Sent Events (SSE).
+        - `event: sources` -> `data: {"sources": ["Fonte 1", ...]}`
+        - `event: text_chunk` -> `data: {"chunk": "Parte da resposta..."}`
+        - `event: error` -> `data: {"error": "Mensagem de erro..."}`
+        - `event: end_stream` -> `data: {"message": "Stream ended."}`
 
-3. **Selecione um PDF para processar:**
-   - O programa exibirá uma lista de PDFs disponíveis no diretório `pdfs/`.
-   - PDFs já processados anteriormente serão marcados como `[indexado]`.
-   - Digite o número correspondente ao PDF ou o caminho completo para um novo arquivo.
+### Interface de Linha de Comando (CLI)
 
-4. **Faça perguntas sobre o documento:**
-   - Digite sua pergunta e pressione Enter.
-   - O programa processará a pergunta usando o modelo configurado no `ollama` e exibirá a resposta.
-   - Digite `ajuda` ou `help` para ver sugestões de perguntas.
-   - Digite `sair`, `exit` ou `quit` para encerrar o programa.
+1.  **Ative o ambiente virtual:**
+    ```bash
+    pipenv shell
+    ```
 
-## Estrutura do Projeto
+2.  **Execute a aplicação CLI:**
+    ```bash
+    python main.py
+    ```
 
-- `main.py` - Arquivo principal da aplicação.
-- `pdfs/` - Diretório onde os PDFs serão armazenados.
-- `indices/` - Diretório para os índices de vetores dos documentos processados.
-- `Pipfile` - Arquivo que define as dependências do projeto, agora incluindo `ollama`.
-- `Pipfile.lock` - Arquivo gerado automaticamente para bloquear as versões das dependências.
+3.  Siga as instruções no console para selecionar um PDF e fazer perguntas.
+    - Digite `ajuda` ou `help` para ver sugestões e comandos.
+    - Digite `reindex` para forçar a reindexação do PDF atual.
+    - Digite `sair`, `exit` ou `quit` para encerrar.
 
-## Configuração Avançada
+## Estrutura do Projeto (Principais Arquivos)
 
-Você pode personalizar o comportamento ajustando os seguintes parâmetros no código fonte (`main.py`):
+- `api.py`: Lógica da API FastAPI.
+- `main.py`: Lógica da Interface de Linha de Comando (CLI).
+- `services.py`: Contém `IndexService` (para indexação) e `QueryService` (para consultas).
+- `llm_client.py`: Cliente assíncrono para interagir com Ollama.
+- `config.py`: Carrega configurações de `.env` usando Pydantic.
+- `utils/`: Módulos utilitários.
+- `pdfs/`: Diretório padrão para PDFs.
+- `indices/`: Diretório padrão para índices FAISS.
+- `tests/`: Contém testes unitários e de integração.
+- `Pipfile`, `Pipfile.lock`: Gerenciamento de dependências.
+- `Dockerfile`: Para containerização da aplicação.
+- `.env.example`: Arquivo de exemplo para variáveis de ambiente.
 
-- **Tamanho dos chunks**: Modifique `chunk_size` (padrão: 1000 caracteres).
-- **Sobreposição dos chunks**: Ajuste `chunk_overlap` (padrão: 200 caracteres).
-- **Recuperação de documentos**: O parâmetro `retrieval_k` define quantos documentos serão recuperados (padrão: 3).
-- **Diversidade de resultados**: Ajuste `diversity_lambda` para balancear relevância e diversidade (padrão: 0.25).
-- **Modelo de embeddings**: Utiliza "sentence-transformers/all-mpnet-base-v2" para melhor captura semântica.
-- **Parâmetros do Ollama**: Ajustáveis na chamada `ollama.chat()`:
-  - `temperature`: 0.1 (baixa temperatura para respostas mais determinísticas)
-  - `num_predict`: 2048 (limite de tokens para prever)
-  - `top_k`: 40 (número de tokens mais prováveis a considerar)
-  - `top_p`: 0.9 (probabilidade cumulativa para amostragem de núcleo)
+## Configuração
+
+As configurações principais são gerenciadas através do arquivo `.env`. Veja `.env.example` para todas as opções disponíveis, incluindo:
+- `PDFS_DIR`, `INDICES_DIR`
+- `CHUNK_SIZE`, `CHUNK_OVERLAP`, `CHUNKING_MODE`
+- `EMBEDDING_MODEL_NAME`, `OLLAMA_MODEL_NAME`, `OLLAMA_HOST`, `OLLAMA_TIMEOUT`
+- Configurações do Retriever (K values, thresholds)
+- `API_PDF_MAX_SIZE_MB`
+- `UVICORN_HOST`, `UVICORN_PORT`, `UVICORN_TIMEOUT_KEEP_ALIVE`
+
+## Desenvolvimento e Testes
+
+1.  **Instale dependências de desenvolvimento:**
+    ```bash
+    pipenv install --dev
+    ```
+2.  **Execute os testes:**
+    Ative o ambiente (`pipenv shell`) e rode:
+    ```bash
+    pytest
+    ```
+    Para ver o relatório de cobertura de código:
+    ```bash
+    pytest --cov=. --cov-report html
+    ```
+    O relatório HTML estará em `htmlcov/index.html`.
+
+## Docker (Opcional)
+
+1.  **Construa a imagem Docker:**
+    ```bash
+    docker build -t chat-with-pdf-app .
+    ```
+
+2.  **Execute o container:**
+    Certifique-se que o Ollama está acessível pela rede do container (ex: usando `host.docker.internal` para `OLLAMA_HOST` no `.env` se o Ollama estiver rodando no host, ou configurando uma rede Docker comum).
+    ```bash
+    docker run -p 8000:8000 \
+           -v ./pdfs:/app/pdfs \
+           -v ./indices:/app/indices \
+           -v ./.env:/app/.env \ # Mapeia o arquivo .env para dentro do container
+           --add-host=host.docker.internal:host-gateway \ # Para Ollama no host (Linux: use --network="host" ou IP)
+           chat-with-pdf-app
+    ```
+    Ajuste `OLLAMA_HOST` no seu arquivo `.env` para `http://host.docker.internal:11434` (ou o IP do host se `--network="host"` não for usado/disponível).
 
 ## Resolução de Problemas
 
-1. **Erro "Ollama não está respondendo":**
-   - Verifique se o servidor do Ollama está ativo (`ollama serve`).
-   - Confirme que o modelo foi baixado corretamente com `ollama list`.
-
-2. **Respostas muito lentas:**
-   - Use um modelo menor ou mais rápido (ex.: `llama3.2` já é otimizado).
-   - Aumente os recursos de hardware, se possível.
-
-3. **Erros de memória:**
-   - Reduza o número de documentos recuperados (`retrieval_k`) ou use um modelo menor.
-
-4. **Índice corrompido:**
-   - Delete o diretório correspondente em `indices/` para recriá-lo.
-   - Alternativamente, defina `force_reindex=True` na classe ChatWithPDF.
+- **Erro "Ollama não está respondendo" / "Connection refused"**:
+    - Verifique se o servidor Ollama está ativo (`ollama serve`).
+    - Confirme que `OLLAMA_HOST` em `.env` está correto e acessível da aplicação/container.
+    - Verifique logs do Ollama.
+- **Respostas lentas**:
+    - Use um modelo menor ou mais rápido.
+    - Aumente os recursos de hardware.
+- **Índice corrompido/desatualizado**:
+    - Para a CLI, use o comando `reindex`.
+    - Para a API, re-uploade o PDF para forçar a reindexação.
+    - Manualmente, delete o subdiretório correspondente em `indices/`.
 
 ## Contribuições
 
-Contribuições são bem-vindas! Abra um issue ou envie um pull request para colaborar.
+Contribuições são bem-vindas! Abra um issue ou envie um pull request.
 
 ## Licença
 
 Este projeto está licenciado sob a licença Apache-2.0 - veja o arquivo LICENSE para mais detalhes.
-
-## Agradecimentos
-
-- [LangChain](https://github.com/hwchase17/langchain) - Framework para aplicações de LLM.
-- [Ollama](https://ollama.com/) - Ferramenta para rodar modelos de linguagem localmente.
-- [FAISS](https://github.com/facebookresearch/faiss) - Biblioteca para busca de similaridade eficiente.
-- [Hugging Face](https://huggingface.co/) - Plataforma para modelos de linguagem e embeddings.
