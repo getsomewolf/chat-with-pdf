@@ -175,7 +175,7 @@ class ChatWithPDF:
         self.diversity_lambda = 0.25  # Ligeiramente ajustado para favorecer relevância com diversidade
         
         # Configuração para override manual quando necessário
-        self.force_reindex = True
+        self.force_reindex = False
         
         # Configurações para a busca híbrida
         self.initial_vector_k = 50 # K para a busca vetorial inicial (ampla)
