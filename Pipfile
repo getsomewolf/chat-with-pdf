@@ -21,8 +21,13 @@ rapidocr-onnxruntime = "*"
 rank-bm25 = "*"
 fastapi = "*"
 uvicorn = "*"
+pydantic-settings = "*" # Added for config management
+python-multipart = "*" # Added for FastAPI UploadFile
 
 [dev-packages]
+pytest = "*"
+pytest-cov = "*"
+pytest-asyncio = "*" # Added for async tests
 
 [requires]
 python_version = "3.10"
