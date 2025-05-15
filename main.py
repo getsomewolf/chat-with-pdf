@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import re
 import sys  # para Output/LoadingIndicator
 import time  # para sleep e time
+import os  # ensure os available for format_docs_for_api
 
 # Importar cliente de LLM e construtor de prompt
 from prompt_builder import PromptBuilder
@@ -62,6 +63,18 @@ def format_docs(docs):
         formatted_text += "\n" + "-" * 40 + "\n"
     
     return formatted_text
+
+# adicionar função de formatação para API
+def format_docs_for_api(docs: list[Document]) -> tuple[str, list[str]]:
+    """Formata documentos para API: retorna contexto e lista de fontes"""
+    context_text = ""
+    sources: list[str] = []
+    for doc in docs:
+        context_text += doc.page_content + "\n"
+        if doc.metadata and 'source' in doc.metadata:
+            source = f"Fonte: {os.path.basename(doc.metadata['source'])}, Página {doc.metadata.get('page','N/A')}"
+            sources.append(source)
+    return context_text, sources
 
 # Classe para mostrar animação de loading
 class LoadingIndicator:
@@ -178,8 +191,8 @@ class ChatWithPDF:
         # Configurar LLM client e PromptBuilder
         self.prompt_builder = PromptBuilder()
         self.llm_client = LLMClient(model_name="llama3.2", event_manager=self.event_manager, prompt_builder=self.prompt_builder)
-        # emitir evento de inicialização
-        self.event_manager.emit('setup_started', {'pdf_path': self.pdf_path, 'mode': self.chunking_mode})
+        # emitir evento de inicialização da instância
+        self.event_manager.emit('chat_with_pdf_initialized', {'pdf_path': self.pdf_path, 'mode': self.chunking_mode})
         self.setup()
 
     def index_exists(self):
@@ -410,9 +423,13 @@ class ChatWithPDF:
 
     def ask_optimized(self, question):
         """Método otimizado com busca híbrida: Vetorial + Threshold -> BM25 -> LLM"""
-        if question in self.response_cache:
+        if question in self.response_cache and isinstance(self.response_cache[question], dict):
+            cached = self.response_cache[question]
             print("Resposta encontrada no cache!")
-            return self.response_cache[question]
+            print(cached['answer'])
+            for src in cached.get('sources', []):
+                print(f"[{src}]")
+            return cached['answer']
 
         print(f"\nProcessando pergunta: '{question}'")
         max_retries = 2
@@ -460,8 +477,13 @@ class ChatWithPDF:
                 print("Gerando resposta via LLMClient...")
                 answer = self.llm_client.generate(context, question)
                 # Salvar no cache para consultas futuras
-                self.response_cache[question] = answer
+                _, sources = format_docs_for_api(final_docs)
+                data = {'answer': answer, 'sources': sources, 'cached': False}
+                self.response_cache[question] = data
+                # imprimir resposta e fontes
                 print(answer)
+                for src in sources:
+                    print(f"[{src}]")
                 return answer
 
             except Exception as e:
@@ -479,6 +501,30 @@ class ChatWithPDF:
                 # Garantir que o indicador de loading seja interrompido em qualquer circunstância
                 if loading.is_running:
                     loading.stop()
+
+    # implementar método para uso na API
+    def ask_for_api(self, question: str) -> dict:
+        # verificar cache
+        if question in self.response_cache and isinstance(self.response_cache[question], dict):
+            data = self.response_cache[question]
+            data['cached'] = True
+            return data
+        # recuperação de documentos
+        self.event_manager.emit('retrieval_started', {'question': question, 'context': 'api'})
+        docs = self.retriever_strategy.retrieve(question)
+        self.event_manager.emit('retrieval_completed', {'count': len(docs), 'context': 'api'})
+        # formatar contexto
+        context_text, sources = format_docs_for_api(docs)
+        # geração de resposta
+        self.event_manager.emit('generation_started', {'question': question, 'context': 'api'})
+        start_time = time.time()
+        answer = self.llm_client.generate(context_text, question)
+        elapsed = time.time() - start_time
+        self.event_manager.emit('generation_completed', {'time': elapsed, 'context': 'api'})
+        # construir e armazenar resposta
+        response_data = {'answer': answer, 'sources': sources, 'cached': False}
+        self.response_cache[question] = response_data
+        return response_data
 
 def list_available_pdfs():
     pdfs_in_dir = [os.path.join(PDFS_DIR, f) for f in os.listdir(PDFS_DIR) if f.lower().endswith('.pdf')]
@@ -626,64 +672,34 @@ def verify_workspace_integrity():
         
     print("Verificação de ambiente concluída.")
 
-if __name__ == "__main__":
+# consolidar CLI em função separada
+def main_cli():
     print_header()
-
-    # Verificar integridade do ambiente
     verify_workspace_integrity()
-    
-    # Limpar índices não utilizados
     cleanup_unused_indices()
-
     pdf_path = select_pdf()
-
     if not pdf_path:
         print("\nNenhum PDF selecionado. Encerrando o programa.")
-        exit()
+        return
+    # configurar event manager CLI
+    cli_event_manager = EventManager()
+    cli_logger = LoggingObserver()
+    for ev in ['setup_started','embeddings_loaded','index_loaded','index_creation_started','chunks_split','index_created','retrieval_started','retrieval_completed','generation_started','generation_completed']:
+        cli_event_manager.subscribe(ev, cli_logger)
+    # instanciar ChatWithPDF para CLI
+    chunking_mode = chunking_mode if 'chunking_mode' in locals() else 'both'
+    chat = ChatWithPDF(pdf_path, chunking_mode=chunking_mode, event_manager=cli_event_manager)
+    # loop de perguntas
+    while True:
+        user_question = input("\nPergunta: ")
+        if user_question.lower() in ["sair", "exit", "quit"]:
+            print("\nEncerrando chat. Até mais!")
+            break
+        if user_question.lower() in ["ajuda", "help"]:
+            print_help()
+            continue
+        chat.ask_optimized(user_question)
 
-    try:
-        # Permitir escolha do modo de chunking
-        print("\nEscolha o modo de chunking:")
-        print("1. Tokens com overlap (padrão)")
-        print("2. Parágrafos/seções")
-        print("3. Ambos (parágrafo + tokens, recomendado)")
-        chunk_mode_input = input("Digite 1, 2 ou 3 [3]: ").strip()
-        chunking_mode = {"1": "tokens", "2": "paragraphs", "3": "both"}.get(chunk_mode_input, "both")
-
-        # configurar event manager e observer
-        event_manager = EventManager()
-        logger = LoggingObserver()
-        for ev in ['setup_started','embeddings_loaded','index_loaded','index_creation_started','chunks_split','index_created','retrieval_started','retrieval_completed','generation_started','generation_completed']:
-            event_manager.subscribe(ev, logger)
-
-        chat = ChatWithPDF(pdf_path, chunking_mode=chunking_mode, event_manager=event_manager)
-
-        print("\n" + "=" * 70)
-        print(f"{'MODO DE CHAT - BUSCA HÍBRIDA':^70}")
-        print("=" * 70)
-        print("Digite suas perguntas. Usando Vetorial -> Threshold -> BM25.")
-        print("Threshold de Distância Vetorial:", chat.vector_distance_threshold)
-        print("K Final (BM25):", chat.final_bm25_k)
-        print("Digite 'sair', 'exit' ou 'quit' para finalizar.")
-        print("Digite 'ajuda' ou 'help' para ver sugestões de perguntas.")
-
-        while True:
-            user_question = input("\nPergunta: ")
-            question_lower = user_question.lower()
-
-            if question_lower in ["sair", "quit", "exit"]:
-                print("\nEncerrando chat. Até mais!")
-                break
-
-            if not question_lower.strip():
-                print("\nPor favor, digite uma pergunta.")
-                continue
-
-            if question_lower in ["ajuda", "help"]:
-                print_help()
-                continue
-
-            chat.ask_optimized(user_question)
-    except Exception as e:
-        print(f"\nErro: {e}")
-        print("Tente novamente com um arquivo PDF válido.")
+# ... substituir bloco principal para usar main_cli
+if __name__ == "__main__":
+    main_cli()

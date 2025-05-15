@@ -20,6 +20,7 @@ cachetools = "*"
 ollama = "*"
 rapidocr-onnxruntime = "*"
 rank-bm25 = "*"
+fastapi = "*"
 
 [dev-packages]
 

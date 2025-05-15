@@ -10,13 +10,13 @@ class VectorRetrieverStrategy(RetrieverStrategy):
     def __init__(self, vector_store, k: int):
         self.retriever = vector_store.as_retriever(search_kwargs={'k': k})
     def retrieve(self, query: str) -> list:
-        return self.retriever.get_relevant_documents(query)
+        return self.retriever.invoke(query)
 
 class BM25RetrieverStrategy(RetrieverStrategy):
     def __init__(self, documents: list, k: int):
         self.retriever = BM25Retriever.from_documents(documents, k=k)
     def retrieve(self, query: str) -> list:
-        return self.retriever.get_relevant_documents(query)
+        return self.retriever.invoke(query)
 
 class HybridRetrieverStrategy(RetrieverStrategy):
     def __init__(self, vector_store, threshold: float, initial_k: int, final_k: int, documents: list):
@@ -36,4 +36,4 @@ class HybridRetrieverStrategy(RetrieverStrategy):
             return [doc for doc, _ in initial][:self.final_k]
         # passo 3: BM25 sobre filtrados
         bm25 = BM25Retriever.from_documents(filtered, k=min(self.final_k, len(filtered)))
-        return bm25.get_relevant_documents(query)
+        return bm25.invoke(query)
