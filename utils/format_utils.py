@@ -42,7 +42,7 @@ def format_docs_for_api(docs: list[Document]) -> tuple[str, list[str]]:
         if 'paragraph' in doc.metadata:
             source_str += f", Parágrafo {doc.metadata.get('paragraph', 'N/A')}"
         if 'chunk_index' in doc.metadata:
-             source_str += f", Chunk Index {doc.metadata.get('chunk_index', 'N/A')}"
+            source_str += f", Chunk Index {doc.metadata.get('chunk_index', 'N/A')}"
         
         if source_str != "Fonte: Desconhecida": # Only add if some metadata was found
             sources.append(source_str)
