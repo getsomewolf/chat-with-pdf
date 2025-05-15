@@ -5,6 +5,7 @@ import time
 import asyncio
 import cachetools
 from typing import Optional, List, Tuple, AsyncGenerator
+import pickle
 
 from langchain_core.documents import Document
 
@@ -19,6 +20,7 @@ from llm_client import LLMClient
 from event_manager import EventManager
 from utils.format_utils import format_docs_for_api, format_docs_for_cli
 from utils.cli_utils import LoadingIndicator # For CLI usage, might be conditional
+from utils.file_utils import ensure_pdf_is_in_pdfs_dir
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,8 +33,7 @@ class IndexService:
         force_reindex: bool = False
     ):
         self.original_pdf_path = pdf_path
-        # Ensure PDF is in the designated PDFS_DIR and get its path there
-        self.pdf_path_in_managed_dir = self._ensure_pdf_in_managed_dir(pdf_path)
+        self.pdf_path_in_managed_dir = ensure_pdf_is_in_pdfs_dir(pdf_path)
         
         self.pdf_basename = os.path.basename(self.pdf_path_in_managed_dir).split('.')[0]
         self.index_path = os.path.join(settings.INDICES_DIR, f"index_{self.pdf_basename}")
@@ -59,77 +60,56 @@ class IndexService:
         self.all_chunks: Optional[List[Document]] = None
         logger.info(f"IndexService initialized for PDF: {self.pdf_path_in_managed_dir}, Force reindex: {self.force_reindex}")
 
-    def _ensure_pdf_in_managed_dir(self, pdf_path_or_filename: str) -> str:
-        """Ensures the PDF is in PDFS_DIR, copying if necessary."""
-        pdf_basename = os.path.basename(pdf_path_or_filename)
-        target_pdf_path = os.path.join(settings.PDFS_DIR, pdf_basename)
-
-        # If only a filename was given, assume it should be in PDFS_DIR
-        if not os.path.isabs(pdf_path_or_filename) and not os.path.exists(pdf_path_or_filename):
-             if os.path.exists(target_pdf_path):
-                 return target_pdf_path
-             else: # Try to find it relative to where script is run, then copy
-                if os.path.exists(os.path.join(os.getcwd(), pdf_path_or_filename)):
-                    pdf_path_or_filename = os.path.join(os.getcwd(), pdf_path_or_filename)
-                else:
-                    raise FileNotFoundError(f"PDF '{pdf_basename}' not found in '{settings.PDFS_DIR}' or current directory.")
-
-        if not os.path.exists(pdf_path_or_filename):
-             raise FileNotFoundError(f"PDF not found: {pdf_path_or_filename}")
-
-        # If full path was given and it's not already in PDFS_DIR, or if it's newer
-        if os.path.abspath(pdf_path_or_filename) != os.path.abspath(target_pdf_path):
-            if not os.path.exists(target_pdf_path) or \
-               os.path.getmtime(pdf_path_or_filename) > os.path.getmtime(target_pdf_path):
-                logger.info(f"Copying PDF from '{pdf_path_or_filename}' to '{target_pdf_path}'")
-                shutil.copy2(pdf_path_or_filename, target_pdf_path)
-        
-        return target_pdf_path
-
     async def initialize_index(self, use_cli_indicator: bool = False):
         """Loads an existing index or creates a new one if needed or forced."""
         self.event_manager.emit('index_setup_started', {'pdf_path': self.pdf_path_in_managed_dir, 'force_reindex': self.force_reindex})
-        
+
         if self.vs_repo.exists() and not self.force_reindex:
             logger.info(f"Index found for {self.pdf_path_in_managed_dir}. Loading...")
             indicator_msg = "Carregando índice existente..."
             if use_cli_indicator:
                 with LoadingIndicator(indicator_msg):
-                    self.vector_store = await asyncio.to_thread(self.vs_repo.load)
+                    self.vector_store, self.all_chunks = await asyncio.to_thread(self.vs_repo.load)
             else:
-                self.vector_store = await asyncio.to_thread(self.vs_repo.load)
-            
+                self.vector_store, self.all_chunks = await asyncio.to_thread(self.vs_repo.load)
+
             logger.info(f"Index loaded successfully from {self.index_path}")
             self.event_manager.emit('index_loaded', {'path': self.index_path})
-            # We need all_chunks for BM25 in HybridRetriever. If not stored with index, regenerate.
-            # This is a simplification; ideally, chunks would be stored or derivable without full re-read.
-            await self._ensure_chunks_available_for_retriever(use_cli_indicator)
         else:
             if self.force_reindex and self.vs_repo.exists():
                 logger.info(f"Forcing re-creation of index for {self.pdf_path_in_managed_dir}.")
             else:
                 logger.info(f"No index found or re-index forced for {self.pdf_path_in_managed_dir}. Creating new index.")
             await self._create_index(use_cli_indicator)
-        
+
         self.event_manager.emit('index_setup_completed', {'pdf_path': self.pdf_path_in_managed_dir})
 
     async def _ensure_chunks_available_for_retriever(self, use_cli_indicator: bool = False):
-        """Ensures self.all_chunks is populated, typically by re-processing the PDF if not already available."""
+        """Ensures self.all_chunks is populated, loading from disk if available."""
+        chunks_path = os.path.join(self.index_path, "index_chunks.pkl")
         if self.all_chunks is None:
-            logger.info("Chunks not in memory for retriever. Processing PDF to get chunks.")
-            # This simplified approach re-reads and re-chunks.
-            # A more optimized way would be to store/load chunks alongside the FAISS index.
-            indicator_msg = "Lendo PDF para chunks..."
-            if use_cli_indicator:
-                with LoadingIndicator(indicator_msg):
-                    documents = await asyncio.to_thread(self.pdf_repo.load, self.pdf_path_in_managed_dir)
+            if os.path.exists(chunks_path):
+                logger.info("Loading chunks from disk.")
+                with open(chunks_path, "rb") as f:
+                    self.all_chunks = pickle.load(f)
             else:
-                documents = await asyncio.to_thread(self.pdf_repo.load, self.pdf_path_in_managed_dir)
-            
-            self.all_chunks = await asyncio.to_thread(self.chunk_strategy.split, documents)
-            for i, doc_chunk in enumerate(self.all_chunks): # Add chunk_index metadata
-                doc_chunk.metadata['chunk_index'] = i + 1
-            logger.info(f"PDF processed into {len(self.all_chunks)} chunks for retriever.")
+                logger.info("Chunks not found on disk. Processing PDF to generate chunks.")
+                indicator_msg = "Lendo PDF para chunks..."
+                if use_cli_indicator:
+                    with LoadingIndicator(indicator_msg):
+                        documents = await asyncio.to_thread(self.pdf_repo.load, self.pdf_path_in_managed_dir)
+                else:
+                    documents = await asyncio.to_thread(self.pdf_repo.load, self.pdf_path_in_managed_dir)
+
+                self.all_chunks = await asyncio.to_thread(self.chunk_strategy.split, documents)
+                for i, doc_chunk in enumerate(self.all_chunks):
+                    doc_chunk.metadata['chunk_index'] = i + 1
+
+                # Save chunks to disk for future use
+                with open(chunks_path, "wb") as f:
+                    pickle.dump(self.all_chunks, f)
+
+                logger.info(f"PDF processed into {len(self.all_chunks)} chunks for retriever.")
 
 
     async def _create_index(self, use_cli_indicator: bool = False):
@@ -299,9 +279,9 @@ class QueryService:
         streamed_parts_for_cache = [("sources", {"sources": sources_list})]
 
         if not context_text.strip():
-             logger.warning("Context text is empty after formatting documents.")
-             yield ("text_chunk", {"chunk": "O contexto extraído dos documentos está vazio."})
-             return
+            logger.warning("Context text is empty after formatting documents.")
+            yield ("text_chunk", {"chunk": "O contexto extraído dos documentos está vazio."})
+            return
 
         logger.info(f"Context generated: {len(context_text)} chars. Asking LLM.")
         
@@ -347,8 +327,8 @@ class QueryService:
             context_text, sources_list = format_docs_for_api(final_docs)
 
         if not context_text.strip():
-             logger.warning("Context text is empty after formatting documents.")
-             return "O contexto extraído dos documentos está vazio.", []
+            logger.warning("Context text is empty after formatting documents.")
+            return "O contexto extraído dos documentos está vazio.", []
         
         logger.info(f"Context generated: {len(context_text)} chars. Asking LLM (non-streaming).")
         

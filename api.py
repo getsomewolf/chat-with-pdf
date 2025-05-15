@@ -72,7 +72,7 @@ async def get_or_create_services(pdf_filename_basename: str, force_reindex: bool
     pdf_path_in_managed_dir = os.path.join(settings.PDFS_DIR, pdf_filename_basename)
     if not os.path.exists(pdf_path_in_managed_dir) and not force_reindex: # if force_reindex, upload will place it
         # This case happens if /ask is called for a PDF that was never uploaded or its file is gone
-         raise FileNotFoundError(f"PDF file {pdf_filename_basename} not found in managed directory: {settings.PDFS_DIR}")
+        raise FileNotFoundError(f"PDF file {pdf_filename_basename} not found in managed directory: {settings.PDFS_DIR}")
 
 
     # Create new instances
@@ -223,22 +223,18 @@ async def stream_answer_events(pdf_filename: str, question: str) -> AsyncGenerat
         yield f"event: end_stream\ndata: {event_data}\n\n"
 
 
-@app.post("/ask") # Changed to POST to accept JSON body
+@app.post("/ask")
 async def ask_question(request: QuestionRequest):
+    """
+    Endpoint to handle user questions about a specific PDF.
+    Emits events for logging and streams the response as Server-Sent Events (SSE).
+    """
     api_event_manager.emit('api_ask_request', {'pdf_filename': request.pdf_filename, 'question': request.question})
-    
+
     if not request.pdf_filename or not request.question:
         raise HTTPException(status_code=400, detail="pdf_filename and question are required.")
 
-    # Check if the PDF (and thus its index) should exist
-    # This check is now implicitly handled by get_or_create_services
-    # pdf_managed_path = os.path.join(settings.PDFS_DIR, request.pdf_filename)
-    # if not os.path.exists(pdf_managed_path):
-    #    raise HTTPException(status_code=404, detail=f"PDF '{request.pdf_filename}' not found. Please upload it first.")
-    # index_path = os.path.join(settings.INDICES_DIR, f"index_{request.pdf_filename.split('.')[0]}")
-    # if not (os.path.exists(index_path) and os.listdir(index_path)):
-    #    raise HTTPException(status_code=404, detail=f"Index for PDF '{request.pdf_filename}' not found. Please ensure it's processed.")
-
+    # Stream the response using the helper function
     return StreamingResponse(
         stream_answer_events(request.pdf_filename, request.question),
         media_type="text/event-stream"
@@ -248,28 +244,34 @@ async def ask_question(request: QuestionRequest):
 class AnswerResponse(BaseModel):
     answer: str
     sources: list[str] = []
-    cached_response: bool = False # Kept for consistency if non-streaming is used
+    cached_response: bool = False
 
 @app.post("/ask-non-streaming", response_model=AnswerResponse, deprecated=True)
 async def ask_question_non_streaming(request: QuestionRequest):
+    """
+    Deprecated endpoint for non-streaming question answering.
+    """
     api_event_manager.emit('api_ask_request_non_streaming', {'pdf_filename': request.pdf_filename, 'question': request.question})
+
     try:
         _, query_service = await get_or_create_services(request.pdf_filename, force_reindex=False)
-        
+
         # Check cache first (QueryService handles its internal cache)
         cached_q = query_service.response_cache.get(request.question)
         if cached_q and isinstance(cached_q, dict) and 'final_answer' in cached_q:
-             return AnswerResponse(
+            return AnswerResponse(
                 answer=cached_q['final_answer'], 
                 sources=cached_q['sources'], 
                 cached_response=True
             )
 
+        # Generate the answer and return it
         answer, sources = await query_service.answer_question_non_streaming(request.question)
         return AnswerResponse(answer=answer, sources=sources, cached_response=False)
+
     except FileNotFoundError as fnf:
         raise HTTPException(status_code=404, detail=str(fnf))
-    except ValueError as ve: # Catch other specific errors if QueryService raises them
+    except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Generic error in /ask-non-streaming for {request.pdf_filename}: {e}", exc_info=True)
