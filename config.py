@@ -1,10 +1,13 @@
 from pydantic_settings import BaseSettings
 import os
 from dotenv import load_dotenv
+import logging
 
 # Load .env file from the project root
 project_root = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(project_root, ".env"))
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
@@ -44,6 +47,6 @@ settings = Settings()
 
 # Example usage:
 if __name__ == "__main__":
-    print(f"PDFs directory: {settings.PDFS_DIR}")
-    print(f"Ollama Model: {settings.OLLAMA_MODEL_NAME}")
-    print(f"Max PDF Upload Size (MB): {settings.API_PDF_MAX_SIZE_MB}")
+    logger.info(f"PDFs directory: {settings.PDFS_DIR}")
+    logger.info(f"Ollama Model: {settings.OLLAMA_MODEL_NAME}")
+    logger.info(f"Max PDF Upload Size (MB): {settings.API_PDF_MAX_SIZE_MB}")

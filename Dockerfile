@@ -1,5 +1,10 @@
-# filepath: c:\Users\lucas\Projects\chat-with-pdf\Dockerfile
+# Dockerfile for FastAPI application with Pipenv
 FROM python:3.10-slim
+
+# Force CPU-only mode for ML libraries
+# Uncomment the following lines if you want to run on CPU only
+ENV CUDA_VISIBLE_DEVICES=""
+ENV TOKENIZERS_PARALLELISM="false"
 
 # Set working directory
 WORKDIR /app

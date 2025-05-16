@@ -13,10 +13,6 @@ from event_manager import EventManager
 from observers import LoggingObserver
 from prompt_builder import PromptBuilder
 from llm_client import LLMClient
-from embeddings_factory import EmbeddingFactory # For direct use if needed, though services encapsulate
-from pdf_repository import PDFRepository
-from vector_store_repository import VectorStoreRepository
-from chunk_strategies import ChunkStrategyFactory
 
 import logging
 logger = logging.getLogger(__name__)
