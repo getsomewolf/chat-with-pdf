@@ -118,27 +118,23 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     # Size check
     max_size_bytes = settings.API_PDF_MAX_SIZE_MB * 1024 * 1024
-    file_size = 0
-    # Read chunks to determine size without loading whole file into memory at once if too large
-    # However, UploadFile.file is a SpooledTemporaryFile, it might already be in memory or on disk
-    # A more robust way for very large files might involve streaming the file and checking size progressively.
-    # For now, we seek to end and tell.
-    await file.seek(0, 2) # Move to end of file
-    file_size = await file.tell() # Get size
-    await file.seek(0) # Reset to start for reading
-
+    # Read the file content to check its size
+    file_content = await file.read()
+    file_size = len(file_content)
     if file_size > max_size_bytes:
         raise HTTPException(
             status_code=413, 
             detail=f"File too large. Maximum size is {settings.API_PDF_MAX_SIZE_MB}MB. Provided: {file_size / (1024*1024):.2f}MB"
         )
+    # Reset the file pointer for further reading
+    file.file.seek(0)
 
     pdf_target_path = os.path.join(settings.PDFS_DIR, file.filename)
     
     try:
         # Save the uploaded PDF to the PDFS_DIR
         with open(pdf_target_path, "wb") as buffer:
-            buffer.write(await file.read())
+            buffer.write(file_content)
         logger.info(f"PDF '{file.filename}' uploaded and saved to '{pdf_target_path}'")
     except Exception as e:
         logger.error(f"Error saving uploaded PDF '{file.filename}': {e}")
@@ -148,37 +144,24 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     try:
         # Initialize services with force_reindex=True for the uploaded PDF
-        # This will create/update the index.
-        # The IndexService constructor now handles copying to PDFS_DIR if it wasn't already there.
-        # Since we saved it directly to pdf_target_path, it's already in PDFS_DIR.
         index_service, _ = await get_or_create_services(file.filename, force_reindex=True)
-        
-        # Ensure index is actually created/updated
-        # initialize_index is called within get_or_create_services if new/forced
-        # If we want to be absolutely sure, we can call it again, but it should be redundant.
-        # await index_service.initialize_index() 
-
         status_message = "PDF processed and index created/updated successfully."
         index_status = "Indexed"
         if not index_service.get_vector_store() or not index_service.get_all_chunks():
             status_message = "PDF uploaded, but index creation might have issues. Check logs."
             index_status = "Indexing Error"
             logger.error(f"Index seems problematic for {file.filename} after processing upload.")
-
-
         return UploadResponse(
             message=status_message,
             pdf_filename=file.filename,
             index_status=index_status
         )
-    except FileNotFoundError as fnf: # Should be caught by get_or_create_services if PDF disappears
+    except FileNotFoundError as fnf:
         logger.error(f"FileNotFoundError during upload processing for {file.filename}: {fnf}")
         raise HTTPException(status_code=404, detail=str(fnf))
     except Exception as e:
         logger.error(f"Error processing PDF '{file.filename}' after upload: {e}", exc_info=True)
-        # Clean up the uploaded file if processing fails catastrophically
         if os.path.exists(pdf_target_path):
-            # os.remove(pdf_target_path) # Or quarantine it
             logger.info(f"Uploaded PDF {pdf_target_path} kept despite processing error for debugging.")
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
 
@@ -242,7 +225,7 @@ class AnswerResponse(BaseModel):
     sources: list[str] = []
     cached_response: bool = False
 
-@app.post("/ask-non-streaming", response_model=AnswerResponse, deprecated=True)
+@app.post("/ask-non-streaming", response_model=AnswerResponse)
 async def ask_question_non_streaming(request: QuestionRequest):
     """
     Deprecated endpoint for non-streaming question answering.
