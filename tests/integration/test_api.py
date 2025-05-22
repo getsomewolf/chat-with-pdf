@@ -5,7 +5,7 @@ import shutil
 import json
 import asyncio
 
-from config import settings # For accessing PDFS_DIR, INDICES_DIR
+from src.config.settings import settings # For accessing PDFS_DIR, INDICES_DIR
 
 # Assuming conftest.py provides test_client and temp_pdf_file fixtures
 # pytestmark = pytest.mark.asyncio # if using async test functions directly

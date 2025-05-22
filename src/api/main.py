@@ -7,19 +7,20 @@ import asyncio
 import json
 from typing import Dict, Tuple, AsyncGenerator
 
-from config import settings
-from services import IndexService, QueryService
-from event_manager import EventManager
-from observers import LoggingObserver
-from prompt_builder import PromptBuilder
-from llm_client import LLMClient
+from src.config.settings import settings
+from src.core.services import IndexService, QueryService
+from src.core.event_manager import EventManager
+from src.core.observers import LoggingObserver
+from src.core.prompt_builder import PromptBuilder
+from src.core.llm_client import LLMClient
 
 import logging
+import uvicorn
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Chat with PDF API",
-    version="1.1",
+    version="1.1.0",
     description="API for uploading PDFs and asking questions about their content."
 )
 
@@ -258,8 +259,8 @@ async def ask_question_non_streaming(request: QuestionRequest):
 
 
 if __name__ == "__main__":
-    import uvicorn
-    # Ensure directories from settings are created (config.py does this on import)
+    
+    # Ensure directories from settings are created (settings.py does this on import)
     # os.makedirs(settings.PDFS_DIR, exist_ok=True)
     # os.makedirs(settings.INDICES_DIR, exist_ok=True)
     
@@ -269,7 +270,7 @@ if __name__ == "__main__":
     logger.info(f"Ollama server expected at: {settings.OLLAMA_HOST}")
     
     uvicorn.run(
-        "api:app", 
+        "src.api.main:app", 
         host=settings.UVICORN_HOST, 
         port=settings.UVICORN_PORT, 
         reload=True, # For development

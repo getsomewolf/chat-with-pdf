@@ -1,9 +1,9 @@
 # LLM client for interacting with Ollama
 import time
 import ollama # type: ignore
-from event_manager import EventManager
-from prompt_builder import PromptBuilder
-from config import settings
+from src.core.event_manager import EventManager
+from src.core.prompt_builder import PromptBuilder
+from src.config.settings import settings
 from typing import AsyncGenerator
 import logging
 

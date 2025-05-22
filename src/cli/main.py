@@ -1,12 +1,17 @@
 import os
+import sys
+
+# Ensure project root is in PYTHONPATH so 'src' package can be resolved
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import glob
 import warnings
 from datetime import datetime
-from event_manager import EventManager, Observer
-from services import IndexService, QueryService, PromptBuilder, LLMClient
-from utils.cli_utils import LoadingIndicator
-from utils.file_utils import list_available_pdfs, has_index, select_pdf_cli, cleanup_unused_indices_cli
-from config import settings
+from src.core.event_manager import EventManager, Observer
+from src.core.services import IndexService, QueryService, PromptBuilder, LLMClient
+from src.utils.cli_utils import LoadingIndicator
+from src.utils.file_utils import list_available_pdfs, has_index, select_pdf_cli, cleanup_unused_indices_cli
+from src.config.settings import settings
 import logging
 import asyncio
 

@@ -28,4 +28,4 @@ RUN mkdir -p /app/pdfs /app/indices
 EXPOSE 8000
 
 # Default command to run the API
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

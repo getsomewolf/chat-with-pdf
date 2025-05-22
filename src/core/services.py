@@ -9,18 +9,18 @@ import pickle
 
 from langchain_core.documents import Document
 
-from config import settings
-from pdf_repository import PDFRepository
-from embeddings_factory import EmbeddingFactory
-from chunk_strategies import ChunkStrategyFactory, ChunkStrategy
-from vector_store_repository import VectorStoreRepository
-from retriever_strategies import HybridRetrieverStrategy, RetrieverStrategy # Add others if needed
-from prompt_builder import PromptBuilder
-from llm_client import LLMClient
-from event_manager import EventManager
-from utils.format_utils import format_docs_for_api, format_docs_for_cli
-from utils.cli_utils import LoadingIndicator # For CLI usage, might be conditional
-from utils.file_utils import ensure_pdf_is_in_pdfs_dir
+from src.config.settings import settings
+from src.infra.pdf_repository import PDFRepository
+from src.infra.embeddings_factory import EmbeddingFactory
+from src.infra.chunk_strategies import ChunkStrategyFactory, ChunkStrategy
+from src.infra.vector_store_repository import VectorStoreRepository
+from src.infra.retriever_strategies import HybridRetrieverStrategy, RetrieverStrategy # Add others if needed
+from src.core.prompt_builder import PromptBuilder
+from src.core.llm_client import LLMClient
+from src.core.event_manager import EventManager
+from src.utils.format_utils import format_docs_for_api, format_docs_for_cli
+from src.utils.cli_utils import LoadingIndicator # For CLI usage, might be conditional
+from src.utils.file_utils import ensure_pdf_is_in_pdfs_dir
 import logging
 
 logger = logging.getLogger(__name__)
