@@ -9,8 +9,8 @@ import shutil
 # To make this work, ensure your project root is in PYTHONPATH when running tests,
 # or use relative imports if your test structure allows.
 # For simplicity, we'll assume api.py is discoverable.
-from api import app as fastapi_app # api.py needs to be in PYTHONPATH
-from config import settings
+from src.api.main import app as fastapi_app # api.py needs to be in PYTHONPATH
+from src.config.settings import settings
 
 
 @pytest.fixture(scope="session")
@@ -73,7 +73,7 @@ def mock_ollama_client_success(mocker):
         return {"message": {"content": "Mocked full LLM response."}}
 
     if 'stream' in mocker.patch.object(ollama.AsyncClient, 'chat').call_args.kwargs and \
-       mocker.patch.object(ollama.AsyncClient, 'chat').call_args.kwargs['stream'] is True: # type: ignore
+        mocker.patch.object(ollama.AsyncClient, 'chat').call_args.kwargs['stream'] is True: # type: ignore
         mock_async_client.chat = mock_chat_stream
     else:
         mock_async_client.chat = mock_chat_non_stream

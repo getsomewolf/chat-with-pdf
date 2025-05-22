@@ -1,7 +1,7 @@
 import os
 import glob
 import shutil
-from config import settings # Assuming settings are now in config.py
+from src.config.settings import settings # Assuming settings are now in config.py
 
 def list_available_pdfs() -> list[str]:
     """Lists all available PDFs in the configured PDFS_DIR and current directory."""

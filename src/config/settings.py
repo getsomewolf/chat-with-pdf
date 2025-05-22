@@ -1,10 +1,20 @@
 from pydantic_settings import BaseSettings
 import os
 from dotenv import load_dotenv
+import logging
 
 # Load .env file from the project root
-project_root = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(project_root, ".env"))
+# project_root = os.path.dirname(os.path.abspath(__file__)) # This is src/config
+# load_dotenv(os.path.join(project_root, ".env")) # This would look for .env in src/config
+
+# Correctly determine project root (two levels up from src/config)
+project_root_corrected = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')) # Go up two levels
+dotenv_path = os.path.join(project_root_corrected, ".env")
+load_dotenv(dotenv_path)
+
+print(f"Project root for .env: {project_root_corrected}, attempting to load .env from: {dotenv_path}")
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
@@ -44,6 +54,6 @@ settings = Settings()
 
 # Example usage:
 if __name__ == "__main__":
-    print(f"PDFs directory: {settings.PDFS_DIR}")
-    print(f"Ollama Model: {settings.OLLAMA_MODEL_NAME}")
-    print(f"Max PDF Upload Size (MB): {settings.API_PDF_MAX_SIZE_MB}")
+    logger.info(f"PDFs directory: {settings.PDFS_DIR}")
+    logger.info(f"Ollama Model: {settings.OLLAMA_MODEL_NAME}")
+    logger.info(f"Max PDF Upload Size (MB): {settings.API_PDF_MAX_SIZE_MB}")

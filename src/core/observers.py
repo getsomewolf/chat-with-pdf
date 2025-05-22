@@ -1,4 +1,4 @@
-from event_manager import Observer # Assuming event_manager.py is in the same root
+from src.core.event_manager import Observer # Assuming event_manager.py is in the same root
 import logging
 
 # Configure basic logging
