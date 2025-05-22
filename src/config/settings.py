@@ -12,9 +12,10 @@ project_root_corrected = os.path.abspath(os.path.join(os.path.dirname(__file__),
 dotenv_path = os.path.join(project_root_corrected, ".env")
 load_dotenv(dotenv_path)
 
-print(f"Project root for .env: {project_root_corrected}, attempting to load .env from: {dotenv_path}")
 
 logger = logging.getLogger(__name__)
+
+logger.info(f"Project root for .env: {project_root_corrected}, attempting to load .env from: {dotenv_path}")
 
 class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
@@ -43,6 +44,8 @@ class Settings(BaseSettings):
 
     RESPONSE_CACHE_MAX_SIZE: int = 100
     RESPONSE_CACHE_TTL_SECONDS: int = 3600
+
+    SERVICE_CACHE_MAX_SIZE: int = 10 # Max number of service instances (and their vector stores) to keep in memory
 
     # Ensure directories exist
     def __init__(self, **values):

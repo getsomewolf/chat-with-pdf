@@ -6,6 +6,7 @@ import os
 import asyncio
 import json
 from typing import Dict, Tuple, AsyncGenerator
+import cachetools # Import cachetools
 
 from src.config.settings import settings
 from src.core.services import IndexService, QueryService
@@ -25,9 +26,8 @@ app = FastAPI(
 )
 
 # Global cache for service instances, keyed by PDF filename (basename)
-# This is a simple in-memory cache. For production, consider a more robust solution
-# or manage service lifecycles with FastAPI dependencies if appropriate.
-service_instances_cache: Dict[str, Tuple[IndexService, QueryService]] = {}
+# Using LRUCache for memory management
+service_instances_cache: cachetools.LRUCache = cachetools.LRUCache(maxsize=settings.SERVICE_CACHE_MAX_SIZE)
 
 # Setup global event manager and logger for API context
 api_event_manager = EventManager()

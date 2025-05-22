@@ -23,6 +23,7 @@ fastapi = "*"
 uvicorn = "*"
 pydantic-settings = "*" # Added for config management
 python-multipart = "*" # Added for FastAPI UploadFile
+pymupdf = "*" # Added for PyMuPDFLoader
 
 [dev-packages]
 pytest = "*"

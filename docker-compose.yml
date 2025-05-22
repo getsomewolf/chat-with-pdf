@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_with_pdf_app
+    ports:
+      - "${UVICORN_PORT:-8000}:8000" # Use UVICORN_PORT from .env, default to 8000
+    volumes:
+      - ./src:/app/src # Mount source code for development hot-reloading
+      - ./pdfs:/app/pdfs
+      - ./indices:/app/indices
+      - ./.env:/app/.env # Mount .env file for configuration
+    environment:
+      - OLLAMA_HOST=http://ollama:11434 # Override OLLAMA_HOST to point to the ollama service
+      # Other environment variables can be set here or loaded from the .env file
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PDFS_DIR=${PDFS_DIR:-pdfs} # Ensure these match .env or provide defaults
+      - INDICES_DIR=${INDICES_DIR:-indices}
+      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
+      - CHUNKING_MODE=${CHUNKING_MODE:-both}
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-sentence-transformers/all-mpnet-base-v2}
+      - OLLAMA_MODEL_NAME=${OLLAMA_MODEL_NAME:-llama3.2}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-120}
+      - RETRIEVAL_K=${RETRIEVAL_K:-4}
+      - INITIAL_VECTOR_K=${INITIAL_VECTOR_K:-50}
+      - VECTOR_DISTANCE_THRESHOLD=${VECTOR_DISTANCE_THRESHOLD:-1.0}
+      - FINAL_BM25_K=${FINAL_BM25_K:-6}
+      - API_PDF_MAX_SIZE_MB=${API_PDF_MAX_SIZE_MB:-100}
+      - RESPONSE_CACHE_MAX_SIZE=${RESPONSE_CACHE_MAX_SIZE:-100}
+      - RESPONSE_CACHE_TTL_SECONDS=${RESPONSE_CACHE_TTL_SECONDS:-3600}
+      - SERVICE_CACHE_MAX_SIZE=${SERVICE_CACHE_MAX_SIZE:-10}
+      - UVICORN_TIMEOUT_KEEP_ALIVE=${UVICORN_TIMEOUT_KEEP_ALIVE:-120}
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama # Persist Ollama models
+    # To automatically pull a model, you could use a custom entrypoint or run a command after startup.
+    # For simplicity, users can be instructed to exec into the container or use the Ollama CLI.
+    # Example: docker-compose exec ollama ollama pull llama3.2
+    # Or, a more complex setup might involve a script in the ollama service.
+    # For now, manual pull or pre-pulling on the host is assumed.
+    # If you have NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # or 'all'
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_data: # Defines the named volume for Ollama
