@@ -1,4 +1,4 @@
-# Chat com PDF - Aplicação de Consulta a Documentos PDF (v0.2.0)
+# Alfred Agent Chat com PDF - Aplicação de Consulta a Documentos PDF (v0.2.0)
 
 Uma aplicação Python que permite interagir com documentos PDF utilizando um modelo de linguagem local (LLM) via Ollama, com gerenciamento simplificado via Docker Compose e recuperação de contexto aprimorada com estratégias híbridas de busca.
 
@@ -382,7 +382,8 @@ src/
 │   ├── services.py       # IndexService, QueryService
 │   ├── llm_client.py     # Cliente Ollama
 │   ├── prompt_builder.py # Construção de prompts
-│   └── event_manager.py  # Sistema de eventos
+│   ├── event_manager.py  # Sistema de eventos
+│   └── observers.py      # Observadores de eventos (ex: Logging)
 ├── infra/         # Infraestrutura
 │   ├── pdf_repository.py      # Carregamento PDFs
 │   ├── vector_store_repository.py # Gerenciamento FAISS
