@@ -1,5 +1,5 @@
 import pytest
-from prompt_builder import PromptBuilder # Assuming prompt_builder.py is in project root
+from src.core.prompt_builder import PromptBuilder # Assuming prompt_builder.py is in project root
 
 def test_prompt_builder_builds_correct_prompt():
     builder = PromptBuilder()

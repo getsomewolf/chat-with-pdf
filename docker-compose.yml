@@ -1,0 +1,60 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_with_pdf_app
+    ports:
+      - "${UVICORN_PORT:-8000}:8000" # Use UVICORN_PORT from .env, default to 8000
+    volumes:
+      - ./src:/app/src # Mount source code for development hot-reloading
+      - ./pdfs:/app/pdfs
+      - ./indices:/app/indices
+      # - ./.env:/app/.env # Mount .env file for configuration
+    env_file:
+      - ./.env # Load environment variables from .env file
+    environment:
+      - OLLAMA_HOST=http://ollama:11434 # Override OLLAMA_HOST to point to the ollama service      
+    depends_on:
+      - ollama
+    restart: unless-stopped
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: 1 # Or 'all' to use all available GPUs
+#              capabilities: [gpu]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - "${USERPROFILE}/.ollama/models:/root/.ollama/models"
+      - ./scripts/init-ollama.sh:/init-ollama.sh # Script to initialize Ollama    
+    environment:
+      - OLLAMA_MODEL_TO_PULL=${OLLAMA_MODEL_NAME:-llama3.2}
+    #command: ["ollama", "run", "${OLLAMA_MODEL_NAME:-llama3.2}"]
+
+    entrypoint: ["/bin/sh", "init-ollama.sh"]
+
+    
+    # To automatically pull a model, you could use a custom entrypoint or run a command after startup.
+    # For simplicity, users can be instructed to exec into the container or use the Ollama CLI.
+    # Example: docker-compose exec ollama ollama pull llama3.2
+    # Or, a more complex setup might involve a script in the ollama service.
+    # For now, manual pull or pre-pulling on the host is assumed.
+    # If you have NVIDIA GPU:
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: 1 # Or 'all'
+#              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_data: # Defines the named volume for Ollama

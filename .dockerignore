@@ -1,0 +1,56 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+.env
+.git
+.gitignore
+.vscode
+*.db
+*.sqlite3
+tests/
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+scripts/
+docs/
+site/
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+*.log
+# Add other files and directories that should not be included in the Docker image
+notebooks/
+.DS_Store
+# Depending on your OS, you might want to add other OS-specific files
+Thumbs.db
+# If you have large data files not needed in the image
+data_files_not_for_docker/
+# Backup files
+*.bak
+*.swp
+# Ollama models are managed by the ollama service volume, not in this app image
+models/
+# Indices and PDFs are mounted as volumes, not part of the image itself
+# but copying them initially might be desired if not using volumes for some reason.
+# For this setup, we use volumes, so they are not needed in the image.
+# pdfs/
+# indices/

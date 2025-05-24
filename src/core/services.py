@@ -43,8 +43,9 @@ class IndexService:
 
         self.pdf_repo = PDFRepository()
         self.embedding_model = EmbeddingFactory.get_model(
-            settings.EMBEDDING_MODEL_NAME, 
-            show_progress=False # Typically false for server-side
+            settings.EMBEDDING_MODEL_NAME,             
+            settings.DEVICE_CONFIGURATION,
+            show_progress=True
         )
         self.vs_repo = VectorStoreRepository(
             storage_path=self.index_path, 
@@ -202,16 +203,47 @@ class QueryService:
 
     def _decompose_complex_query(self, query: str) -> List[str]:
         """Decomposes a complex query into simpler sub-queries."""
-        # Basic decomposition, can be expanded
-        if '?' in query and query.count('?') > 1:
-            return [q.strip() + '?' for q in query.split('?') if q.strip()]
+        # Enhanced decomposition logic
+        # Split by question marks first if multiple are present
+        if query.count('?') > 1:
+            sub_queries = [q.strip() for q in query.split('?') if q.strip()]
+            return [sq + '?' if not sq.endswith('?') else sq for sq in sub_queries]
+
+        # Split by conjunctions and punctuation that often separate distinct informational needs
+        # Prioritize splitting by conjunctions that imply separate clauses/questions
+        # Using regex to handle variations and ensure whole word matching for conjunctions
+        # Order of conjunctions can matter for splitting preference.
+        # This is a heuristic and can be further improved.
         
-        conjunctions = [' and ', ' or ', ' e ', ' ou ', ', '] # Added comma
-        for conj in conjunctions:
-            if conj in query.lower():
-                # More robust splitting needed if conjunctions are part of phrases
-                return [q.strip() for q in re.split(f'{conj}', query, flags=re.IGNORECASE) if q.strip()]
-        return [query]
+        # Pattern to split by conjunctions like 'e', 'ou', 'and', 'or', 
+        # or by comma/semicolon followed by interrogative words (o que, quem, como, onde, quando, por que, qual)
+        # This is a complex task for regex and might need an NLP approach for high accuracy.
+        # For now, keeping it relatively simple.
+        
+        # Simple conjunctions first
+        conjunction_pattern = r'\s+(?:e|ou|and|or)\s+'
+        parts = re.split(conjunction_pattern, query, flags=re.IGNORECASE)
+        
+        if len(parts) > 1:
+            # Further split parts if they seem to contain multiple questions not caught by conjunctions
+            # This part can become very complex. For now, we'll stick to conjunction-based splitting.
+            # A more advanced approach might involve looking for multiple verbs or question phrases.
+            # For simplicity, if split by conjunction, return those parts.
+            # Re-add question mark if the original query had one and parts don't.
+            has_original_q_mark = query.endswith('?')
+            final_parts = []
+            for part in parts:
+                part = part.strip()
+                if part:
+                    if has_original_q_mark and not part.endswith('?'):
+                        final_parts.append(part + '?')
+                    else:
+                        final_parts.append(part)
+            if final_parts:
+                return final_parts
+
+        # If no conjunctions split, return the original query as a single item list
+        return [query.strip()]
 
     async def _retrieve_documents(self, question: str) -> List[Document]:
         if not self.retriever_strategy:
