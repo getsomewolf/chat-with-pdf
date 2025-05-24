@@ -24,7 +24,7 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 RUN pip3 install pipenv
 
 # Set environment variables for HuggingFace tokenizers and Python
-ENV TOKENIZERS_PARALLELISM="false"
+# ENV TOKENIZERS_PARALLELISM="false"
 ENV PYTHONUNBUFFERED=1
 # REMOVE the following line if you want GPU access:
 # ENV CUDA_VISIBLE_DEVICES=""

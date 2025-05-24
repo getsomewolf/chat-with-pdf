@@ -36,6 +36,8 @@ services:
       - ./scripts/init-ollama.sh:/init-ollama.sh # Script to initialize Ollama    
     environment:
       - OLLAMA_MODEL_TO_PULL=${OLLAMA_MODEL_NAME:-llama3.2}
+    #command: ["ollama", "run", "${OLLAMA_MODEL_NAME:-llama3.2}"]
+
     entrypoint: ["/bin/sh", "init-ollama.sh"]
 
     
