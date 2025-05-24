@@ -33,7 +33,12 @@ services:
       - "11434:11434"
     volumes:
       - "${USERPROFILE}/.ollama/models:/root/.ollama/models"
-    command: "ollama pull ${OLLAMA_MODEL_NAME:-llama3.2}" # Pull the model specified in .env or default to llama3.2    
+      - ./scripts/init-ollama.sh:/init-ollama.sh # Script to initialize Ollama    
+    environment:
+      - OLLAMA_MODEL_TO_PULL=${OLLAMA_MODEL_NAME:-llama3.2}
+    entrypoint: ["/bin/sh", "init-ollama.sh"]
+
+    
     # To automatically pull a model, you could use a custom entrypoint or run a command after startup.
     # For simplicity, users can be instructed to exec into the container or use the Ollama CLI.
     # Example: docker-compose exec ollama ollama pull llama3.2
