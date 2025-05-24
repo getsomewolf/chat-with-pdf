@@ -112,11 +112,11 @@ Você pode executar a CLI dentro do contêiner da aplicação Docker:
         ```
 5.  **Inicie a API FastAPI (localmente):**
     ```bash
-    uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn src.api.main:app
     ```
 6.  **Execute a CLI (localmente):**
     ```bash
-    python src/cli/main.py
+    python -m src.cli.main
     ```
 
 ## Estrutura do Projeto

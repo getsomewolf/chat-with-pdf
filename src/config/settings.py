@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     INITIAL_VECTOR_K: int = 50
     VECTOR_DISTANCE_THRESHOLD: float = 1.0
     FINAL_BM25_K: int = 6
+    DEVICE_CONFIGURATION: str = "cpu" # 'cpu' || 'cuda' || 'npu' || 'mps'
 
     API_PDF_MAX_SIZE_MB: int = 100
     

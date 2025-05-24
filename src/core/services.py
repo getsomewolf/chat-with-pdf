@@ -43,8 +43,9 @@ class IndexService:
 
         self.pdf_repo = PDFRepository()
         self.embedding_model = EmbeddingFactory.get_model(
-            settings.EMBEDDING_MODEL_NAME, 
-            show_progress=False # Typically false for server-side
+            settings.EMBEDDING_MODEL_NAME,             
+            settings.DEVICE_CONFIGURATION,
+            show_progress=True
         )
         self.vs_repo = VectorStoreRepository(
             storage_path=self.index_path, 
